@@ -149,9 +149,13 @@ void BasicVulkan::initDeviceAndQueue(){
     deviceQueueCreateInfo.pQueuePriorities = &(queuePriority);
 
     //TODO check if requested extensions are actually available. if not vkCreateDevice fails
+<<<<<<< HEAD
     const std::vector<const char*> enabledDeviceExtensionNames = { "VK_KHR_deferred_host_operations", 
                                                                    "VK_KHR_acceleration_structure",
                                                                    "VK_KHR_ray_tracing_pipeline"};
+=======
+    const std::vector<const char*> enabledDeviceExtensionNames = { "VK_KHR_deferred_host_operations" };
+>>>>>>> 0e0833bfa101a6b1ddc00a03a05f7ad882155d1e
     VkDeviceCreateInfo deviceCreateInfo = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
     deviceCreateInfo.ppEnabledExtensionNames = enabledDeviceExtensionNames.data();
     deviceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(enabledDeviceExtensionNames.size());
