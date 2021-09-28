@@ -1,3 +1,6 @@
+vulkan-minimal-rtx
+*.hdr
+*.png
 build/
 
 CMakeLists.txt.user

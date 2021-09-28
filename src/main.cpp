@@ -1,6 +1,7 @@
 //TODO replace all the runtime_error with actual error checking (check result type)
 //     make a macro for checking for VK_SUCCESS
 //TODO everything created/allocated also destroyed/freed?
+//TODO compile shaders with cmake
 
 //TODO BLAS compaction
 
@@ -13,12 +14,20 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 #include <iostream>
+#include <array>
+#include <algorithm>
 
 #define DEBUG
 
-static int const image_width = 800;
-static int const image_height = 600;
+const int image_width = 800;
+const int image_height = 600;
+
+const int workgroup_width = 16;
+const int workgroup_height = 8; 
 
 const std::string AppName = "Vulkan Basic";
 const auto AppVersion = VK_MAKE_VERSION(1,0,0);
@@ -28,27 +37,49 @@ const auto EngineVersion = VK_MAKE_VERSION(1,0,0);
 //const std::string ModelPath = "../render-data/CornellBox-Original-Merged.obj";
 const std::string ModelPath = "../render-data/sponza.fixed.obj";
 
+const std::string OutFilename = "test";
+
 class BasicVulkan
 {
     public:
         BasicVulkan();
         ~BasicVulkan();
-        void writeImage(const std::string& filename);
+        void writeImage(const std::string& filename, const void *data);
+        void run();
+    private:
         void initVulkan();
-        void initDeviceAndQueue();
-        void loadModel(std::string modelPath);
+        void initDevice();
+        void initBuffers();
+        void createPipeline();
+        void loadModelFromFile(std::string modelPath);
+        void beginCommandBuffer(VkCommandBuffer *commandBuffer);
+        void endAndSubmitCommandBuffer(VkCommandBuffer *commandBuffer, VkQueue *queue);
+        void transferToCPU();
+
+        VkShaderModule loadShaderFromFile(std::string filepath);
+        static std::vector<char> loadFile(std::string filepath);
+        
     private:
         VkInstance instance;
         VkPhysicalDevice physicalDevice;
         VkDevice device;
         VkQueue queue;
-        VkPipeline pipeline;
+        VkCommandPool commandPool;
+        VkCommandBuffer commandBuffer;
+
+        VkBuffer buffer;
+        VkDeviceMemory bufferMemory;
+        VkDeviceSize bufferSize;
+
+        std::vector<VkShaderModule> shaders;
+
         VkPipelineLayout pipelineLayout;
-        VkFramebuffer framebuffer;
-        VkRenderPass renderPass;
+        VkPipeline pipeline;
 
         tinyobj::attrib_t attrib;
         std::vector<tinyobj::shape_t> shapes;
+
+        void* localImageBuffer;
 };
 
 int main(int argc, char** argv){
@@ -57,19 +88,47 @@ int main(int argc, char** argv){
 
 BasicVulkan::BasicVulkan(){
     initVulkan();
-    initDeviceAndQueue();
-    loadModel(ModelPath);
-    return;
+    initDevice();
+    initBuffers();
+    loadModelFromFile(ModelPath);
+    createPipeline();
+    run();
+    transferToCPU();
+    writeImage(OutFilename, localImageBuffer);
 }
 
 BasicVulkan::~BasicVulkan(){
-    vkDestroyDevice(device, nullptr);
-    vkDestroyInstance(instance, nullptr);
-}
-void BasicVulkan::writeImage(const std::string& filename){
-    //stbi_write_png(filename.c_str(), )
+    vkDestroyPipeline(device, this->pipeline, nullptr);
+    vkDestroyPipelineLayout(device, this->pipelineLayout, nullptr);
+    for_each(shaders.begin(), shaders.end(), [this](auto value){vkDestroyShaderModule(device, value, nullptr);});
+    vkFreeCommandBuffers(this->device, this->commandPool, 1, &commandBuffer);
+    vkFreeMemory(this->device, this->bufferMemory, nullptr);
+    vkDestroyBuffer(this->device, this->buffer, nullptr);
+    vkDestroyCommandPool(this->device, this->commandPool, nullptr);
+    vkDestroyDevice(this->device, nullptr);
+    vkDestroyInstance(this->instance, nullptr);
 }
 
+void BasicVulkan::writeImage(const std::string& filename, const void* data){
+    std::cout << "Writing Image" << std::endl;
+    stbi_write_hdr((filename + ".hdr").c_str(), image_width, image_height, 3, reinterpret_cast<const float *>(data));
+    int x, y, comp;
+    //hacky way to convert .hdr to .png
+    stbi_uc* image = stbi_load((filename + ".hdr").c_str(), &x, &y, &comp, 3);
+    stbi_write_png((filename + ".png").c_str(), image_width, image_height, 3, image, 3*image_width);
+}
+void BasicVulkan::run(){
+    // Fill the buffer
+    beginCommandBuffer(&(this->commandBuffer));
+    vkCmdBindPipeline(this->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->pipeline);
+    vkCmdDispatch(this->commandBuffer, 1, 1, 1);
+    VkMemoryBarrier memoryBarrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    memoryBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    vkCmdPipelineBarrier(this->commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &memoryBarrier, 0, nullptr, 0, nullptr);
+    endAndSubmitCommandBuffer(&(this->commandBuffer), &(this->queue));
+    vkQueueWaitIdle(queue);
+}
 void BasicVulkan::initVulkan(){
     //create Instance
     VkApplicationInfo applicationInfo = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
@@ -88,6 +147,12 @@ void BasicVulkan::initVulkan(){
     instanceCreateInfo.ppEnabledLayerNames = enabledLayerNames.data();
     instanceCreateInfo.enabledLayerCount = static_cast<uint32_t>(enabledLayerNames.size());
 
+    VkValidationFeaturesEXT validationFeatures = {VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT};
+    VkValidationFeatureEnableEXT validationFeaturesEnable = VK_VALIDATION_FEATURE_ENABLE_DEBUG_PRINTF_EXT;
+    validationFeatures.enabledValidationFeatureCount = 1;
+    validationFeatures.pEnabledValidationFeatures = &validationFeaturesEnable;
+
+
     //This is only for debug output during instance creation when validation layers are not loaded yet 
     VkDebugUtilsMessengerCreateInfoEXT debugUtilsMessengerCreateInfo = { VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
     debugUtilsMessengerCreateInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT
@@ -102,6 +167,7 @@ void BasicVulkan::initVulkan(){
                 std::cerr << "Instance Creation: " << pCallbackData->pMessage << std::endl;
                 return VK_FALSE;
             };
+    debugUtilsMessengerCreateInfo.pNext = &validationFeatures;
     instanceCreateInfo.pNext = &debugUtilsMessengerCreateInfo;
     #endif
 
@@ -110,7 +176,7 @@ void BasicVulkan::initVulkan(){
     }
 }
 
-void BasicVulkan::initDeviceAndQueue(){
+void BasicVulkan::initDevice(){
     //get present physical devices
     uint32_t physicalDeviceCount = 0;
     vkEnumeratePhysicalDevices(instance, &physicalDeviceCount, nullptr);
@@ -161,10 +227,20 @@ void BasicVulkan::initDeviceAndQueue(){
     deviceQueueCreateInfo.pQueuePriorities = &(queuePriority);
 
     //TODO check if requested extensions are actually available. if not vkCreateDevice fails
-    const std::vector<const char*> enabledDeviceExtensionNames = { "VK_KHR_deferred_host_operations", 
+    std::vector<const char*> enabledDeviceExtensionNames = { "VK_KHR_deferred_host_operations", 
                                                                    "VK_KHR_acceleration_structure",
-                                                                   "VK_KHR_ray_tracing_pipeline"};
-    VkDeviceCreateInfo deviceCreateInfo = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
+                                                                   "VK_KHR_ray_tracing_pipeline",
+                                                                   "VK_KHR_ray_query"};
+#ifdef DEBUG
+    //for GL_EXT_debug_printf
+    enabledDeviceExtensionNames.push_back("VK_KHR_shader_non_semantic_info");
+    #ifdef _WIN32
+    _putenv_s("DEBUG_PRINTF_TO_STDOUT", "1");
+    #else
+    putenv("DEBUG_PRINTF_TO_STDOUT=1");
+    #endif
+#endif
+    VkDeviceCreateInfo deviceCreateInfo = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };    
     deviceCreateInfo.ppEnabledExtensionNames = enabledDeviceExtensionNames.data();
     deviceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(enabledDeviceExtensionNames.size());
     deviceCreateInfo.pQueueCreateInfos = &deviceQueueCreateInfo;
@@ -173,8 +249,113 @@ void BasicVulkan::initDeviceAndQueue(){
         throw std::runtime_error("Creating Logical Device failed");
     }
     vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
+
+    VkCommandPoolCreateInfo commandPoolCreateInfo = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    commandPoolCreateInfo.queueFamilyIndex = queueFamilyIndex;
+    commandPoolCreateInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    if(vkCreateCommandPool(device, &commandPoolCreateInfo, nullptr, &commandPool) != VK_SUCCESS){
+        throw std::runtime_error("Failed to create command pool");
+    }
 }
-void BasicVulkan::loadModel(std::string modelPath){
+
+void BasicVulkan::initBuffers(){
+    //Local buffer
+    localImageBuffer = new int[image_width][image_height][3];
+
+    //Command Buffer
+    VkCommandBufferAllocateInfo commandBufferAllocateInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    commandBufferAllocateInfo.commandBufferCount = 1;
+    commandBufferAllocateInfo.commandPool = this->commandPool;
+    commandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    vkAllocateCommandBuffers(this->device, &commandBufferAllocateInfo, &commandBuffer);
+    
+    //Buffer
+    //TODO Use VkImage instead of VkBuffer?
+    VkBufferCreateInfo bufferCreateInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bufferCreateInfo.size = image_width*image_height*3*sizeof(float);
+    bufferCreateInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    vkCreateBuffer(device, &bufferCreateInfo, nullptr, &(this->buffer));
+    this->bufferSize = bufferCreateInfo.size;
+
+    VkMemoryRequirements memoryRequirements;
+    vkGetBufferMemoryRequirements(device, this->buffer, &memoryRequirements);
+    
+    //TODO make sure to pick best performing memory type
+    int32_t memoryTypeIndex = -1;
+    VkMemoryPropertyFlags memoryPropertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    VkPhysicalDeviceMemoryProperties physicalDeviceMemoryProperties;
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &physicalDeviceMemoryProperties);
+    for (uint32_t i = 0; i < physicalDeviceMemoryProperties.memoryTypeCount; i++) {
+        if ((memoryRequirements.memoryTypeBits & (1 << i)) && (physicalDeviceMemoryProperties.memoryTypes[i].propertyFlags & memoryPropertyFlags) == memoryPropertyFlags) {
+            memoryTypeIndex = i;
+        }
+    }
+    if( memoryTypeIndex == -1)
+    {
+        throw std::runtime_error("failed to find suitable memory type!");
+    }
+
+    VkMemoryAllocateInfo memoryAllocateInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    memoryAllocateInfo.allocationSize = memoryRequirements.size;
+    memoryAllocateInfo.memoryTypeIndex = memoryTypeIndex;
+    if (vkAllocateMemory(device, &memoryAllocateInfo, nullptr, &bufferMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate vertex buffer memory!");
+    }
+    vkBindBufferMemory(this->device, this->buffer, this->bufferMemory, 0);
+}
+
+void BasicVulkan::createPipeline(){
+    VkShaderModule rayTraceCompShader = loadShaderFromFile("shaders/raytrace.comp.glsl.spv");
+
+    VkPipelineShaderStageCreateInfo shaderStageCreateInfo = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    shaderStageCreateInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    shaderStageCreateInfo.module = rayTraceCompShader;
+    shaderStageCreateInfo.pName = "main";
+
+    //Create Pipeline layout
+    VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pipelineLayoutCreateInfo.setLayoutCount = 0;
+    pipelineLayoutCreateInfo.pushConstantRangeCount = 0;
+    if(vkCreatePipelineLayout(device, &pipelineLayoutCreateInfo, VK_NULL_HANDLE, &(this->pipelineLayout)) != VK_SUCCESS){
+        throw std::runtime_error("Failed to create pipeline layout");
+    }
+
+    //Create compute pipeline
+    VkComputePipelineCreateInfo computePipelineCreateInfo = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    computePipelineCreateInfo.stage = shaderStageCreateInfo;
+    computePipelineCreateInfo.layout = pipelineLayout;
+    if(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &computePipelineCreateInfo, VK_NULL_HANDLE, &(this->pipeline)) != VK_SUCCESS){
+        throw std::runtime_error("Failed to create compute pipeline");
+    }
+}
+
+void BasicVulkan::transferToCPU(){
+    void* bufferhandle;
+    vkMapMemory(this->device, this->bufferMemory, 0, VK_WHOLE_SIZE, 0, &bufferhandle);
+    memcpy(localImageBuffer, bufferhandle, (size_t) bufferSize);
+    vkUnmapMemory(this->device, this->bufferMemory);
+}
+
+void BasicVulkan::beginCommandBuffer(VkCommandBuffer *commandBuffer){
+    VkCommandBufferBeginInfo commandBufferBeginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    commandBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if(vkBeginCommandBuffer(*commandBuffer, &commandBufferBeginInfo) != VK_SUCCESS){
+        throw std::runtime_error("Failed to begin command buffer");
+    }
+}
+
+void BasicVulkan::endAndSubmitCommandBuffer(VkCommandBuffer *commandBuffer, VkQueue *queue){
+    vkEndCommandBuffer(*commandBuffer);
+    VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = commandBuffer;
+    if(vkQueueSubmit(*queue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS){
+        throw std::runtime_error("Failed to submit command buffer");
+    }
+}
+
+void BasicVulkan::loadModelFromFile(std::string modelPath){
     tinyobj::ObjReaderConfig reader_config;
     tinyobj::ObjReader reader;
 
@@ -234,4 +415,30 @@ void BasicVulkan::loadModel(std::string modelPath){
     }
     this->attrib = attrib;
     this->shapes = shapes;
+}
+
+std::vector<char> BasicVulkan::loadFile(std::string filepath){
+    std::ifstream file(filepath, std::ios::ate | std::ios::ate);
+    if(!file.is_open()){
+        throw std::runtime_error("Failed to open file: " + filepath);
+    }
+    size_t fileSize = (size_t) file.tellg();
+    std::vector<char> data(fileSize);
+    file.seekg(0);
+    file.read(data.data(), fileSize);
+    file.close();
+    return data;
+}
+
+VkShaderModule BasicVulkan::loadShaderFromFile(std::string filepath){
+    auto shaderFile = loadFile("../shaders/raytrace.comp.glsl.spv");
+    VkShaderModuleCreateInfo shaderModuleCrateInfo = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    shaderModuleCrateInfo.codeSize = shaderFile.size();
+    shaderModuleCrateInfo.pCode = reinterpret_cast<const uint32_t*>(shaderFile.data());
+    VkShaderModule shaderModule;
+    if(vkCreateShaderModule(device, &shaderModuleCrateInfo, VK_NULL_HANDLE, &shaderModule) != VK_SUCCESS){
+        throw std::runtime_error("Failed to create Shader Module");
+    }
+    this->shaders.push_back(shaderModule);
+    return shaderModule;
 }
