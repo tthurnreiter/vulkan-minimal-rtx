@@ -2,20 +2,22 @@
 //     make a macro for checking for VK_SUCCESS
 //TODO everything created/allocated also destroyed/freed?
 //TODO compile shaders with cmake
+//TODO volk: implement "Optimizing device calls" from Readme
 
 //TODO BLAS compaction
 
-
-#include <vulkan/vulkan.h>
+#define VOLK_IMPLEMENTATION
+#include <volk.h>
+//#include <vulkan/vulkan.h>
 
 #define TINYOBJLOADER_IMPLEMENTATION
 #include <tiny_obj_loader.h>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "stb_image_write.h"
+#include <stb_image_write.h>
 
 #define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
+#include <stb_image.h>
 
 #include <iostream>
 #include <array>
@@ -130,6 +132,10 @@ void BasicVulkan::run(){
     vkQueueWaitIdle(queue);
 }
 void BasicVulkan::initVulkan(){
+    if(volkInitialize() != VK_SUCCESS){
+        throw std::runtime_error("Failed to initialize volk");
+    }
+
     //create Instance
     VkApplicationInfo applicationInfo = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
     applicationInfo.pApplicationName = AppName.c_str();
@@ -174,6 +180,7 @@ void BasicVulkan::initVulkan(){
     if(vkCreateInstance(&instanceCreateInfo, nullptr, &instance) != VK_SUCCESS){
         throw std::runtime_error("Failed to create instance");
     }
+    volkLoadInstance(this->instance);
 }
 
 void BasicVulkan::initDevice(){
@@ -306,28 +313,40 @@ void BasicVulkan::initBuffers(){
 }
 
 void BasicVulkan::createPipeline(){
-    VkShaderModule rayTraceCompShader = loadShaderFromFile("shaders/raytrace.comp.glsl.spv");
+    VkShaderModule rayGenShader = loadShaderFromFile("shaders/raytrace.comp.glsl.spv");
 
-    VkPipelineShaderStageCreateInfo shaderStageCreateInfo = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-    shaderStageCreateInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    shaderStageCreateInfo.module = rayTraceCompShader;
-    shaderStageCreateInfo.pName = "main";
+    VkBuffer sbtBuffer;
+    std::array<VkPipelineShaderStageCreateInfo, 1> stages;
+    
+    //raygen shader
+    VkPipelineShaderStageCreateInfo pipelineShaderStageCreateInfo = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    stages[0] = pipelineShaderStageCreateInfo;
+    stages[0].stage = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+    stages[0].module = rayGenShader;
+    stages[0].pName = "main";
 
-    //Create Pipeline layout
-    VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    pipelineLayoutCreateInfo.setLayoutCount = 0;
-    pipelineLayoutCreateInfo.pushConstantRangeCount = 0;
-    if(vkCreatePipelineLayout(device, &pipelineLayoutCreateInfo, VK_NULL_HANDLE, &(this->pipelineLayout)) != VK_SUCCESS){
-        throw std::runtime_error("Failed to create pipeline layout");
-    }
+    std::array<VkRayTracingShaderGroupCreateInfoKHR, 1> groups;
+    
+    VkRayTracingShaderGroupCreateInfoKHR rayTracingShaderGroupCreateInfo = {VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR};
+    groups[0] = rayTracingShaderGroupCreateInfo;
+    groups[0].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+    groups[0].generalShader = 0;
 
-    //Create compute pipeline
-    VkComputePipelineCreateInfo computePipelineCreateInfo = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    computePipelineCreateInfo.stage = shaderStageCreateInfo;
-    computePipelineCreateInfo.layout = pipelineLayout;
-    if(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &computePipelineCreateInfo, VK_NULL_HANDLE, &(this->pipeline)) != VK_SUCCESS){
-        throw std::runtime_error("Failed to create compute pipeline");
-    }
+    
+    //TODO
+
+
+    VkRayTracingPipelineCreateInfoKHR pipelineCreateInfo = {VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR};
+    pipelineCreateInfo.flags = 0;
+    pipelineCreateInfo.stageCount = static_cast<uint32_t>(stages.size());
+    pipelineCreateInfo.pStages = stages.data();
+    pipelineCreateInfo.groupCount = static_cast<uint32_t>(groups.size());
+    pipelineCreateInfo.pGroups = groups.data();
+    pipelineCreateInfo.maxPipelineRayRecursionDepth = 1;
+    pipelineCreateInfo.layout = pipelineLayout;
+    if(vkCreateRayTracingPipelinesKHR(device, VK_NULL_HANDLE, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &(this->pipeline)) != VK_SUCCESS){
+        throw std::runtime_error("Failed to create pipeline");
+    } 
 }
 
 void BasicVulkan::transferToCPU(){

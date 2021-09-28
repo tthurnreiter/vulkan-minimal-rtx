@@ -8,7 +8,7 @@
             "name": "(gdb) Launch",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build/vulkan-minimal-rtx",
+            "program": "${workspaceFolder}/vulkan-minimal-rtx",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",

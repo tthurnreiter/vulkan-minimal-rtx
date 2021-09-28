@@ -60,12 +60,14 @@ include_directories(
     "external/stb"
     "external/tinyobjloader"
     "external/vulkan/include"
+    "external/volk"
     "src"
 )
 
 add_executable(${PROJECT_NAME} ${HEADERS} ${SOURCES} ${GLSL_SOURCES})
 
-target_link_libraries(${PROJECT_NAME} vulkan)
+target_link_libraries(${PROJECT_NAME} dl)
+#target_link_libraries(${PROJECT_NAME} vulkan)
 
 install(FILES ${SPV_OUTPUT} CONFIGURATIONS Release DESTINATION "bin_${ARCH}/${PROJNAME}/shaders")
 install(FILES ${SPV_OUTPUT} CONFIGURATIONS Debug DESTINATION "bin_${ARCH}_debug/${PROJNAME}/shaders")
