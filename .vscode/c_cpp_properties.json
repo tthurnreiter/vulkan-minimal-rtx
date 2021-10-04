@@ -3,7 +3,8 @@
         {
             "name": "Linux",
             "includePath": [
-                "${workspaceFolder}/**"
+                "${workspaceFolder}/**",
+                "${workspaceFolder}/external/**"
             ],
             "defines": [],
             "compilerPath": "/usr/bin/g++",
@@ -13,7 +14,22 @@
             "browse": {
                 "path": []
             },
-            "forcedInclude": []
+            "forcedInclude": [
+                "/data/home/tht50171/vulkan-minimal-rtx/external/vulkan/include/vulkan/vulkan_core.h"
+            ],
+            "compilerArgs": []
+        },
+        {
+            "name": "cmake",
+            "includePath": [
+                "${workspaceFolder}/**"
+            ],
+            "defines": [],
+            "compilerPath": "/usr/bin/gcc",
+            "cStandard": "gnu17",
+            "cppStandard": "gnu++14",
+            "intelliSenseMode": "linux-gcc-x64",
+            "configurationProvider": "ms-vscode.cmake-tools"
         }
     ],
     "version": 4

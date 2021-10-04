@@ -1,6 +1,7 @@
 vulkan-minimal-rtx
 *.hdr
 *.png
+*.spv
 build/
 
 CMakeLists.txt.user
