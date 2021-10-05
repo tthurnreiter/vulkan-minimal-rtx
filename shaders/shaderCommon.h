@@ -1,12 +1,14 @@
 #ifndef SHADER_COMMON_H
 #define SHADER_COMMON_H
 
-struct PassableInfo
+//This file holds defines/structs that are shared between multiple shaders
+
+struct RayPayload
 {
   bool rayHitSky;
   float hitT;
 };
 
-#define M_PI 3.14159
+#define M_PI 3.1415926535897932384626433832795
 
-#endif  // #ifndef SHADER_COMMON_H
+#endif //SHADER_COMMON_H

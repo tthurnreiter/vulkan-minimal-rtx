@@ -1,14 +1,11 @@
 //TODO replace all the runtime_error with actual error checking (check result type)
 //     make a macro for checking for VK_SUCCESS
-//TODO everything created/allocated also destroyed/freed?
-//TODO compile shaders with cmake
 //TODO volk: implement "Optimizing device calls" from Readme
 
 //TODO BLAS compaction
 
 #define VOLK_IMPLEMENTATION
 #include <volk.h>
-//#include <vulkan/vulkan.h>
 
 #define TINYOBJLOADER_IMPLEMENTATION
 #include <tiny_obj_loader.h>
@@ -20,13 +17,10 @@
 #include <stb_image.h>
 
 #include <iostream>
-#include <array>
 #include <algorithm>
 
 #include "VulkanHelpers.h"
 #include "common.h"
-
-#define DEBUG
 
 const int image_width = 800;
 const int image_height = 600;
@@ -46,7 +40,8 @@ class BasicVulkan
     public:
         BasicVulkan();
         ~BasicVulkan();
-        void writeImage(const std::string& filename, void **data);
+
+        void prepare();
         void run();
     private:
         void initVulkan();
@@ -57,12 +52,7 @@ class BasicVulkan
         void createPipeline();
         void loadModelFromFile(std::string modelPath);
         void transferToCPU();
-
-        void destroyBuffer(Buffer buffer);
-
-        VkShaderModule loadShaderFromFile(std::string filepath);
-        static std::vector<char> loadFile(std::string filepath);
-        
+        void writeImage(const std::string& filename, void **data);
     private:
         VkInstance instance;
         VkPhysicalDevice physicalDevice;
@@ -133,14 +123,6 @@ BasicVulkan::~BasicVulkan(){
     vkDestroyInstance(this->instance, nullptr);
 }
 
-void BasicVulkan::writeImage(const std::string& filename, void** data){
-    std::cout << "Writing Image" << std::endl;
-    stbi_write_hdr((filename + ".hdr").c_str(), image_width, image_height, 4, reinterpret_cast<float*>(*data));
-    int x, y, comp;
-    //hacky way to convert .hdr to .png
-    stbi_uc* image = stbi_load((filename + ".hdr").c_str(), &x, &y, &comp, 4);
-    stbi_write_png((filename + ".png").c_str(), image_width, image_height, 4, image, 4*image_width);
-}
 void BasicVulkan::run(){
     VkStridedDeviceAddressRegionKHR sbtRaygenRegion, sbtMissRegion, sbtHitRegion, sbtCallableRegion;
     sbtRaygenRegion.deviceAddress = sbtBuffer.deviceAddress;
@@ -197,7 +179,6 @@ void BasicVulkan::initVulkan(){
     VkValidationFeatureEnableEXT validationFeaturesEnable = VK_VALIDATION_FEATURE_ENABLE_DEBUG_PRINTF_EXT;
     validationFeatures.enabledValidationFeatureCount = 1;
     validationFeatures.pEnabledValidationFeatures = &validationFeaturesEnable;
-
 
     //This is only for debug output during instance creation when validation layers are not loaded yet 
     VkDebugUtilsMessengerCreateInfoEXT debugUtilsMessengerCreateInfo = { VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
@@ -263,7 +244,7 @@ void BasicVulkan::initDevice(){
                 break;
             }
     }
-    if(queueFamilyIndex = 0){
+    if(queueFamilyIndex == 0){
         throw std::runtime_error("No suitable queue found");
     }
 
@@ -282,9 +263,9 @@ void BasicVulkan::initDevice(){
     //for GL_EXT_debug_printf
     enabledDeviceExtensionNames.push_back("VK_KHR_shader_non_semantic_info");
     #ifdef _WIN32
-    _putenv_s("DEBUG_PRINTF_TO_STDOUT", "1");
+    _putenv_s((char*)"DEBUG_PRINTF_TO_STDOUT", "1");
     #else
-    putenv("DEBUG_PRINTF_TO_STDOUT=1");
+    putenv((char*)"DEBUG_PRINTF_TO_STDOUT=1");
     #endif
 #endif
 
@@ -637,19 +618,29 @@ void BasicVulkan::createPipeline(){
     //Shaders
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
     
+    VkShaderModule raygenShader = VulkanHelpers::loadShaderFromFile(device, "../shaders/raytrace.rgen.spv");
+    VkShaderModule missShader = VulkanHelpers::loadShaderFromFile(device, "../shaders/raytrace.rmiss.spv");
+    VkShaderModule hitShader = VulkanHelpers::loadShaderFromFile(device, "../shaders/raytrace.rchit.spv");
+
+    //remember which Shaders we created so we can vkDestroyShaderModule() them later
+    shaders.push_back(raygenShader);
+    shaders.push_back(missShader);
+    shaders.push_back(hitShader);
+
+        
     shaderStages.push_back(VkPipelineShaderStageCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO});
     shaderStages[0].stage = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
-    shaderStages[0].module =  loadShaderFromFile("../shaders/raytrace.rgen.spv");
+    shaderStages[0].module =  raygenShader;
     shaderStages[0].pName = "main";
 
     shaderStages.push_back(VkPipelineShaderStageCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO});
     shaderStages[1].stage = VK_SHADER_STAGE_MISS_BIT_KHR;
-    shaderStages[1].module =  loadShaderFromFile("../shaders/raytrace.rmiss.spv");
+    shaderStages[1].module = missShader;
     shaderStages[1].pName = "main";
 
     shaderStages.push_back(VkPipelineShaderStageCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO});
     shaderStages[2].stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
-    shaderStages[2].module =  loadShaderFromFile("../shaders/raytrace.rchit.spv");
+    shaderStages[2].module = hitShader;
     shaderStages[2].pName = "main";
 
     std::vector<VkRayTracingShaderGroupCreateInfoKHR> shaderGroups;
@@ -789,7 +780,6 @@ void BasicVulkan::createPipeline(){
 }   
 
 void BasicVulkan::transferToCPU(){
-    //Transition image layout
     VulkanHelpers::beginCommandBuffer(commandBuffer);
     VkImageMemoryBarrier imageMemoryBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     imageMemoryBarrier.image = image.image;
@@ -907,28 +897,11 @@ void BasicVulkan::loadModelFromFile(std::string modelPath){
     }    
 }
 
-std::vector<char> BasicVulkan::loadFile(std::string filepath){
-    std::ifstream file(filepath, std::ios::ate | std::ios::ate);
-    if(!file.is_open()){
-        throw std::runtime_error("Failed to open file: " + filepath);
-    }
-    size_t fileSize = (size_t) file.tellg();
-    std::vector<char> data(fileSize);
-    file.seekg(0);
-    file.read(data.data(), fileSize);
-    file.close();
-    return data;
-}
-
-VkShaderModule BasicVulkan::loadShaderFromFile(std::string filepath){
-    auto shaderFile = loadFile(filepath);
-    VkShaderModuleCreateInfo shaderModuleCrateInfo = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-    shaderModuleCrateInfo.codeSize = shaderFile.size();
-    shaderModuleCrateInfo.pCode = reinterpret_cast<const uint32_t*>(shaderFile.data());
-    VkShaderModule shaderModule;
-    if(vkCreateShaderModule(device, &shaderModuleCrateInfo, VK_NULL_HANDLE, &shaderModule) != VK_SUCCESS){
-        throw std::runtime_error("Failed to create Shader Module");
-    }
-    this->shaders.push_back(shaderModule);
-    return shaderModule;
+void BasicVulkan::writeImage(const std::string& filename, void** data){
+    std::cout << "Writing Image" << std::endl;
+    stbi_write_hdr((filename + ".hdr").c_str(), image_width, image_height, 4, reinterpret_cast<float*>(*data));
+    int x, y, comp;
+    //hacky way to convert .hdr to .png
+    stbi_uc* image = stbi_load((filename + ".hdr").c_str(), &x, &y, &comp, 4);
+    stbi_write_png((filename + ".png").c_str(), image_width, image_height, 4, image, 4*image_width);
 }

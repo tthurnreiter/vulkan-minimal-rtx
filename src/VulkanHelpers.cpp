@@ -1,5 +1,7 @@
 #include <iostream>
+#include <fstream>
 #include <cstring>
+#include <vector>
 
 #include "VulkanHelpers.h"
 
@@ -149,4 +151,25 @@ void VulkanHelpers::destroyImage(VkDevice device, Image* image){
     image->memory = VK_NULL_HANDLE;
     image->view = VK_NULL_HANDLE;
     image->image = VK_NULL_HANDLE;
+}
+
+VkShaderModule VulkanHelpers::loadShaderFromFile(VkDevice device, std::string filepath){
+    std::ifstream file(filepath, std::ios::ate | std::ios::ate);
+    if(!file.is_open()){
+        throw std::runtime_error("Failed to open file: " + filepath);
+    }
+    size_t fileSize = (size_t) file.tellg();
+    std::vector<char> shaderFile(fileSize);
+    file.seekg(0);
+    file.read(shaderFile.data(), fileSize);
+    file.close();
+
+    VkShaderModuleCreateInfo shaderModuleCrateInfo = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    shaderModuleCrateInfo.codeSize = shaderFile.size();
+    shaderModuleCrateInfo.pCode = reinterpret_cast<const uint32_t*>(shaderFile.data());
+    VkShaderModule shaderModule;
+    if(vkCreateShaderModule(device, &shaderModuleCrateInfo, VK_NULL_HANDLE, &shaderModule) != VK_SUCCESS){
+        throw std::runtime_error("Failed to create Shader Module");
+    }    
+    return shaderModule;
 }

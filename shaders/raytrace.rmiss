@@ -2,11 +2,14 @@
 
 #extension GL_EXT_ray_tracing : require
 #extension GL_GOOGLE_include_directive : require
-#extension GL_EXT_debug_printf : require
-
+#include "../src/common.h"
 #include "shaderCommon.h"
 
-layout(location = 0) rayPayloadInEXT PassableInfo pld;
+#ifdef DEBUG
+#extension GL_EXT_debug_printf : require
+#endif //DEBUG
+
+layout(location = 0) rayPayloadInEXT RayPayload pld;
 
 void main()
 {
