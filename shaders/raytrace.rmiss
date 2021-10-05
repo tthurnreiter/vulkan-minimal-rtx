@@ -4,11 +4,12 @@
 #extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_debug_printf : require
 
-#include "../src/common.h"
+#include "shaderCommon.h"
 
-layout(binding = BINDING_IMAGE, set = 0, rgba32f) uniform image2D storageImage;
+layout(location = 0) rayPayloadInEXT PassableInfo pld;
 
 void main()
 {
-  //debugPrintfEXT("Hello from RMISS!");
+  pld.rayHitSky = true;
+  //debugPrintfEXT("Hello from RMISS!\n");
 }

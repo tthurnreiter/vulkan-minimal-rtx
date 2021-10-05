@@ -36,8 +36,8 @@ const auto AppVersion = VK_MAKE_VERSION(1,0,0);
 const std::string EngineName = "Vulkan Basic";
 const auto EngineVersion = VK_MAKE_VERSION(1,0,0);
 
-const std::string ModelPath = "../render-data/CornellBox-Original-Merged.obj";
-//const std::string ModelPath = "../render-data/sponza.fixed.obj";
+//const std::string ModelPath = "../render-data/CornellBox-Original-Merged.obj";
+const std::string ModelPath = "../render-data/sponza.fixed.obj";
 
 const std::string OutFilename = "test";
 
