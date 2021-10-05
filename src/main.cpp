@@ -901,8 +901,9 @@ void BasicVulkan::loadModelFromFile(std::string modelPath){
 
     vertices = attrib.GetVertices();
     for(auto shape : shapes){
-        for(auto index : shape.mesh.indices)
-        indices.push_back(index.vertex_index);
+        for(auto index : shape.mesh.indices){
+            indices.push_back(index.vertex_index);
+        }
     }    
 }
 
