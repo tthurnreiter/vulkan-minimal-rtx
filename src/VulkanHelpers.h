@@ -1,5 +1,8 @@
 #include <volk.h>
 #include <stdint.h>
+#include <cassert>
+
+#define CHECK_ERROR(f) {VkResult result = (f); if(result != VK_SUCCESS){ VulkanHelpers::handleError(result, __FILE__, __LINE__, __func__, #f); }}
 
 struct Buffer {
     VkBuffer buffer = VK_NULL_HANDLE;
@@ -32,6 +35,9 @@ class VulkanHelpers{
       static void destroyImage(VkDevice device, Image* image);
       static uint32_t getMemoryTypeIndex(VkPhysicalDevice physicalDevice, VkMemoryRequirements memoryRequirements, VkMemoryPropertyFlags memoryPropertyFlags);
       static void beginCommandBuffer(VkCommandBuffer commandBuffer);
-      static void submitCommandBufferBlocking(VkCommandBuffer commandBuffer, VkQueue queue);
+      static void submitCommandBufferBlocking(VkDevice device, VkCommandBuffer commandBuffer, VkQueue queue);
       static VkShaderModule loadShaderFromFile(VkDevice device, std::string filepath);
+
+      static std::string getResultString(VkResult result);
+      static void handleError(VkResult result, const char* file, int32_t line, const char* func, const char* failedCall);
 };

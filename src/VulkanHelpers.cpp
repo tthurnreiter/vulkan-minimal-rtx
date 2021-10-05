@@ -24,9 +24,7 @@ void VulkanHelpers::createBuffer(VkDevice device, VkPhysicalDevice physicalDevic
     bufferCreateInfo.size = size;
     bufferCreateInfo.usage = bufferUsageFlags;
     bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if(vkCreateBuffer(device, &bufferCreateInfo, nullptr, &buffer->buffer) != VK_SUCCESS){
-        throw std::runtime_error("Failed to create buffer");
-    }
+    CHECK_ERROR(vkCreateBuffer(device, &bufferCreateInfo, nullptr, &buffer->buffer));
     buffer->size = size;
 
     VkMemoryRequirements memoryRequirements;
@@ -41,15 +39,11 @@ void VulkanHelpers::createBuffer(VkDevice device, VkPhysicalDevice physicalDevic
         allocateFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT_KHR;
         memoryAllocateInfo.pNext = &allocateFlagsInfo;
     }
-    if (vkAllocateMemory(device, &memoryAllocateInfo, nullptr, &buffer->memory) != VK_SUCCESS) {
-        throw std::runtime_error("failed to allocate buffer memory!");
-    }
+    CHECK_ERROR(vkAllocateMemory(device, &memoryAllocateInfo, nullptr, &buffer->memory))
     if (data != nullptr)
     {
         void *mapped;
-        if(vkMapMemory(device, buffer->memory, 0, size, 0, &mapped) != VK_SUCCESS){
-            throw std::runtime_error("Failed to map memory");
-        }
+        CHECK_ERROR(vkMapMemory(device, buffer->memory, 0, size, 0, &mapped));
         memcpy(mapped, data, size);
         
         if ((memoryPropertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0)
@@ -85,28 +79,23 @@ void VulkanHelpers::destroyBuffer(VkDevice device, Buffer* buffer){
 void VulkanHelpers::beginCommandBuffer(VkCommandBuffer commandBuffer){
     VkCommandBufferBeginInfo commandBufferBeginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     commandBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if(vkBeginCommandBuffer(commandBuffer, &commandBufferBeginInfo) != VK_SUCCESS){
-        throw std::runtime_error("Failed to begin command buffer");
-    }
+    CHECK_ERROR(vkBeginCommandBuffer(commandBuffer, &commandBufferBeginInfo));
 }
-void VulkanHelpers::submitCommandBufferBlocking(VkCommandBuffer commandBuffer, VkQueue queue){
+void VulkanHelpers::submitCommandBufferBlocking(VkDevice device, VkCommandBuffer commandBuffer, VkQueue queue){
     vkEndCommandBuffer(commandBuffer);
     VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
-    if(vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS){
-        throw std::runtime_error("Failed to submit command buffer");
-    }
-    vkQueueWaitIdle(queue);
+    CHECK_ERROR(vkQueueSubmit(queue, 1, &submitInfo, nullptr));
+    CHECK_ERROR(vkQueueWaitIdle(queue));
 }
 
 void VulkanHelpers::createAccelerationStructureBuffer(VkDevice device, VkPhysicalDevice physicalDevice, AccelerationStructure &accelerationStructure, VkAccelerationStructureBuildSizesInfoKHR buildSizesInfo){
     VkBufferCreateInfo bufferCreateInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bufferCreateInfo.size = buildSizesInfo.accelerationStructureSize;
     bufferCreateInfo.usage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-    if(vkCreateBuffer(device, &bufferCreateInfo, nullptr, &accelerationStructure.buffer) != VK_SUCCESS){
-        throw std::runtime_error("Failed to create acceleration structure buffer");
-    }
+    CHECK_ERROR(vkCreateBuffer(device, &bufferCreateInfo, nullptr, &accelerationStructure.buffer))
+
     VkMemoryRequirements memoryRequirements{};
     vkGetBufferMemoryRequirements(device, accelerationStructure.buffer, &memoryRequirements);
     VkMemoryAllocateFlagsInfo memoryAllocateFlagsInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
@@ -115,12 +104,8 @@ void VulkanHelpers::createAccelerationStructureBuffer(VkDevice device, VkPhysica
     memoryAllocateInfo.pNext = &memoryAllocateFlagsInfo;
     memoryAllocateInfo.allocationSize = memoryRequirements.size;
     memoryAllocateInfo.memoryTypeIndex = getMemoryTypeIndex(physicalDevice, memoryRequirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if(vkAllocateMemory(device, &memoryAllocateInfo, nullptr, &accelerationStructure.memory) != VK_SUCCESS){
-        throw std::runtime_error("Failed to allocate acceleration structure buffer memory");
-    }
-    if(vkBindBufferMemory(device, accelerationStructure.buffer, accelerationStructure.memory, 0) != VK_SUCCESS){
-        throw std::runtime_error("Failed to bind acceleration structure buffer memory");
-    }
+    CHECK_ERROR(vkAllocateMemory(device, &memoryAllocateInfo, nullptr, &accelerationStructure.memory))
+    CHECK_ERROR(vkBindBufferMemory(device, accelerationStructure.buffer, accelerationStructure.memory, 0))
 }
 void VulkanHelpers::destroyAccelerationStructureBuffer(VkDevice device, AccelerationStructure* as){
     if(as->memory != VK_NULL_HANDLE){
@@ -168,8 +153,60 @@ VkShaderModule VulkanHelpers::loadShaderFromFile(VkDevice device, std::string fi
     shaderModuleCrateInfo.codeSize = shaderFile.size();
     shaderModuleCrateInfo.pCode = reinterpret_cast<const uint32_t*>(shaderFile.data());
     VkShaderModule shaderModule;
-    if(vkCreateShaderModule(device, &shaderModuleCrateInfo, VK_NULL_HANDLE, &shaderModule) != VK_SUCCESS){
-        throw std::runtime_error("Failed to create Shader Module");
-    }    
+    CHECK_ERROR(vkCreateShaderModule(device, &shaderModuleCrateInfo, VK_NULL_HANDLE, &shaderModule));
+        
     return shaderModule;
+}
+
+std::string VulkanHelpers::getResultString(VkResult result){
+    switch(result){
+        case VK_SUCCESS: return "VK_SUCCESS";
+        case VK_NOT_READY: return "VK_NOT_READY";
+        case VK_TIMEOUT: return "VK_TIMEOUT";
+        case VK_EVENT_SET: return "VK_EVENT_SET";
+        case VK_EVENT_RESET: return "VK_EVENT_RESET";
+        case VK_INCOMPLETE: return "VK_INCOMPLETE";
+        case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+        case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+        case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
+        case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
+        case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";
+        case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";
+        case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
+        case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENTVK_ERROR_INCOMPATIBLE_DRIVER ";
+        case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
+        case VK_ERROR_TOO_MANY_OBJECTS: return "VK_ERROR_TOO_MANY_OBJECTS";
+        case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+        case VK_ERROR_FRAGMENTED_POOL: return "VK_ERROR_FRAGMENTED_POOL";
+        case VK_ERROR_UNKNOWN: return "VK_ERROR_UNKNOWN";
+        case VK_ERROR_OUT_OF_POOL_MEMORY: return "VK_ERROR_OUT_OF_POOL_MEMORY";
+        case VK_ERROR_INVALID_EXTERNAL_HANDLE: return "VK_ERROR_INVALID_EXTERNAL_HANDLE";
+        case VK_ERROR_FRAGMENTATION: return "VK_ERROR_FRAGMENTATION";
+        case VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS: return "VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS";
+        case VK_ERROR_SURFACE_LOST_KHR: return "VK_ERROR_SURFACE_LOST_KHR";
+        case VK_ERROR_NATIVE_WINDOW_IN_USE_KHR: return "VK_ERROR_NATIVE_WINDOW_IN_USE_KHR";
+        case VK_SUBOPTIMAL_KHR: return "VK_SUBOPTIMAL_KHR";
+        case VK_ERROR_OUT_OF_DATE_KHR: return "VK_ERROR_OUT_OF_DATE_KHR";
+        case VK_ERROR_INCOMPATIBLE_DISPLAY_KHR: return "VK_ERROR_INCOMPATIBLE_DISPLAY_KHR";
+        case VK_ERROR_VALIDATION_FAILED_EXT: return "VK_ERROR_VALIDATION_FAILED_EXT";
+        case VK_ERROR_INVALID_SHADER_NV: return "VK_ERROR_INVALID_SHADER_NV";
+        case VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT: return "VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT";
+        case VK_ERROR_NOT_PERMITTED_EXT: return "VK_ERROR_NOT_PERMITTED_EXT";
+        case VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT: return "VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT";
+        case VK_THREAD_IDLE_KHR: return "VK_THREAD_IDLE_KHR";
+        case VK_THREAD_DONE_KHR: return "VK_THREAD_DONE_KHR";
+        case VK_OPERATION_DEFERRED_KHR: return "VK_OPERATION_DEFERRED_KHR";
+        case VK_OPERATION_NOT_DEFERRED_KHR: return "VK_OPERATION_NOT_DEFERRED_KHR";
+        case VK_PIPELINE_COMPILE_REQUIRED_EXT: return "VK_PIPELINE_COMPILE_REQUIRED_EXT";
+    }
+    return "unknown error";
+}
+
+void VulkanHelpers::handleError(VkResult result, const char* file, int32_t line, const char* func, const char* failedCall){
+    std::cerr << "Vulkan Error: in " << file << ":" << line << std::endl;
+    std::cerr << "Vulkan Error: in " << func << std::endl;
+    std::cerr << "Vulkan Error: from " << failedCall << std::endl;
+    std::cerr << "Vulkan Error: " << VulkanHelpers::getResultString(result) << std::endl;
+    
+    throw std::runtime_error("Critical Error");
 }
