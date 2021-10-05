@@ -223,8 +223,14 @@ void BasicVulkan::initDevice(){
         }
     }
     if(physicalDevice == nullptr){
-        throw std::runtime_error("No suitable GPU found");
+        throw std::runtime_error("Vulkan: No suitable GPU found");
     }
+    else{
+        VkPhysicalDeviceProperties physicalDeviceProperties;
+        vkGetPhysicalDeviceProperties(physicalDevice, &physicalDeviceProperties);
+        std::cout << "Vulkan: Using device " << physicalDeviceProperties.deviceName << std::endl;
+    }
+    
     
     // All GPU commands in Vulkan need to be submitted to a queue
     // First we need to select a queue family
@@ -324,7 +330,7 @@ void BasicVulkan::initBuffers(){
                                 physicalDevice, 
                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                vertices.size()*sizeof(uint32_t),
+                                indices.size()*sizeof(uint32_t),
                                 &indexBuffer,
                                 indices.data());
 
