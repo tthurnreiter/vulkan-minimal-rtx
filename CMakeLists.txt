@@ -1,12 +1,13 @@
 cmake_minimum_required(VERSION 3.1)
+set(CMAKE_VERBOSE_MAKEFILE ON)
 
 project(vulkan-minimal-rtx CXX)
 
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "..")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "../")
 
 set(CMAKE_CXX_STANDARD 17)
 
-set(CMAKE_BUILD_TYPE Debug)
+#set(CMAKE_BUILD_TYPE Debug)
 
 #####################################################################################
 # Macro to add custom build for SPIR-V, with debug information (glslangvalidator's -g flag)
@@ -59,15 +60,16 @@ file(GLOB_RECURSE SOURCES "src/*.cpp")
 include_directories(
     "external/stb"
     "external/tinyobjloader"
-    "external/vulkan/include"
+    "external/vulkan-headers/include"
     "external/volk"
     "src"
 )
 
 add_executable(${PROJECT_NAME} ${HEADERS} ${SOURCES} ${GLSL_SOURCES})
 
-target_link_libraries(${PROJECT_NAME} dl)
-#target_link_libraries(${PROJECT_NAME} vulkan)
 
-install(FILES ${SPV_OUTPUT} CONFIGURATIONS Release DESTINATION "bin_${ARCH}/${PROJNAME}/shaders")
-install(FILES ${SPV_OUTPUT} CONFIGURATIONS Debug DESTINATION "bin_${ARCH}_debug/${PROJNAME}/shaders")
+#target_link_libraries(${PROJECT_NAME} vulkan)
+target_link_libraries(${PROJECT_NAME} dl) #volk needs libdl
+
+#install(FILES ${SPV_OUTPUT} CONFIGURATIONS Release DESTINATION "bin_${ARCH}/${PROJNAME}/shaders")
+#install(FILES ${SPV_OUTPUT} CONFIGURATIONS Debug DESTINATION "bin_${ARCH}_debug/${PROJNAME}/shaders")

@@ -6,10 +6,15 @@
 #include "VulkanHelpers.h"
 
 uint32_t VulkanHelpers::getMemoryTypeIndex(VkPhysicalDevice physicalDevice, VkMemoryRequirements memoryRequirements, VkMemoryPropertyFlags memoryPropertyFlags){
-   //TODO make sure to pick best performing memory type
+    // this function finds a device memory type that satisfies the requested memoryRequirements and memoryPropertyFlags,
+    // usually used to find a suitable device memory type to allocate memory from for VkBuffers, VkImages etc
+
+    // first, get the memory types available on the device and their properties
     VkPhysicalDeviceMemoryProperties physicalDeviceMemoryProperties;
     vkGetPhysicalDeviceMemoryProperties(physicalDevice, &physicalDeviceMemoryProperties);
+
     for (uint32_t i = 0; i < physicalDeviceMemoryProperties.memoryTypeCount; i++) {
+        // memoryTypeBits is a bitmask of memory types that are acceptable locations, check every one if they also have the requested properties
         if (memoryRequirements.memoryTypeBits & (1 << i)){
             if((physicalDeviceMemoryProperties.memoryTypes[i].propertyFlags & memoryPropertyFlags) == memoryPropertyFlags){
                 return i;
@@ -19,48 +24,69 @@ uint32_t VulkanHelpers::getMemoryTypeIndex(VkPhysicalDevice physicalDevice, VkMe
     throw std::runtime_error("failed to find suitable memory type!");
 }
 
-void VulkanHelpers::createBuffer(VkDevice device, VkPhysicalDevice physicalDevice, VkBufferUsageFlags bufferUsageFlags, VkMemoryPropertyFlags memoryPropertyFlags, VkDeviceSize size, Buffer* buffer, void* data){
+VkDeviceAddress VulkanHelpers::getBufferDeviceAddress(VkDevice device, VkBuffer* buffer){
+    // get device address of device memory
+    VkBufferDeviceAddressInfo bufferDeviceAddressInfo = {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+    bufferDeviceAddressInfo.buffer = *buffer;
+    return vkGetBufferDeviceAddress(device, &bufferDeviceAddressInfo);
+}
+
+void VulkanHelpers::createBuffer(VkDevice device, VkPhysicalDevice physicalDevice, VkBufferUsageFlags bufferUsageFlags, VkMemoryPropertyFlags memoryPropertyFlags, VkDeviceSize size, Buffer& buffer, void* data){
+    bufferUsageFlags |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;  // required for vkGetBufferDeviceAddress
+    
+    VulkanHelpers::createBuffer(device, physicalDevice, bufferUsageFlags, memoryPropertyFlags, size, buffer.buffer, buffer.memory, data);
+    buffer.size = size; // remember the size, e.g. for copying into the buffer later
+
+    // get device address of device memory
+    buffer.deviceAddress = getBufferDeviceAddress(device, &buffer.buffer);
+}
+
+void VulkanHelpers::createBuffer(VkDevice device, VkPhysicalDevice physicalDevice, VkBufferUsageFlags bufferUsageFlags, VkMemoryPropertyFlags memoryPropertyFlags, VkDeviceSize size, VkBuffer& buffer, VkDeviceMemory& memory, void* data){
+    // create VkBuffer object
     VkBufferCreateInfo bufferCreateInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bufferCreateInfo.size = size;
     bufferCreateInfo.usage = bufferUsageFlags;
-    bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    CHECK_ERROR(vkCreateBuffer(device, &bufferCreateInfo, nullptr, &buffer->buffer));
-    buffer->size = size;
+    bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE; // we will not access the buffer from multiple different queues
+    CHECK_ERROR(vkCreateBuffer(device, &bufferCreateInfo, nullptr, &buffer));
 
+    // allocate buffer memory
     VkMemoryRequirements memoryRequirements;
-    vkGetBufferMemoryRequirements(device, buffer->buffer, &memoryRequirements);
-
+    vkGetBufferMemoryRequirements(device, buffer, &memoryRequirements);
     VkMemoryAllocateInfo memoryAllocateInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     memoryAllocateInfo.allocationSize = memoryRequirements.size;
+    // find a type of device memory that fits our requirements
     memoryAllocateInfo.memoryTypeIndex = getMemoryTypeIndex(physicalDevice, memoryRequirements, memoryPropertyFlags);
-    VkMemoryAllocateFlagsInfoKHR allocateFlagsInfo{};
+    VkMemoryAllocateFlagsInfoKHR allocateFlagsInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO_KHR};
     if (bufferUsageFlags & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) {
-        allocateFlagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO_KHR;
-        allocateFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT_KHR;
+        // VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT indicates we want to query the buffer's device address later with vkGetBufferDeviceAddress,
+        // so we need request memory that supports this
+        allocateFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
         memoryAllocateInfo.pNext = &allocateFlagsInfo;
     }
-    CHECK_ERROR(vkAllocateMemory(device, &memoryAllocateInfo, nullptr, &buffer->memory))
+    CHECK_ERROR(vkAllocateMemory(device, &memoryAllocateInfo, nullptr, &memory))
+
+    // if a valid data pointer is provided, map memory into application address space and copy the data into the buffer
     if (data != nullptr)
     {
         void *mapped;
-        CHECK_ERROR(vkMapMemory(device, buffer->memory, 0, size, 0, &mapped));
+        CHECK_ERROR(vkMapMemory(device, memory, 0, size, 0, &mapped));
         memcpy(mapped, data, size);
         
         if ((memoryPropertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0)
         {
-            VkMappedMemoryRange mappedRange = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
-            mappedRange.memory = buffer->memory;
-            mappedRange.offset = 0;
-            mappedRange.size = size;
-            vkFlushMappedMemoryRanges(device, 1, &mappedRange);
+            // if memory is host-coherent, flush before unmapping to make sure all CPU writes to 
+            // the mapped memory area will actually be copied to device memory
+            VkMappedMemoryRange mappedMemoryRange = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+            mappedMemoryRange.memory = memory;
+            mappedMemoryRange.offset = 0;
+            mappedMemoryRange.size = size;
+            vkFlushMappedMemoryRanges(device, 1, &mappedMemoryRange);
         }
-        vkUnmapMemory(device, buffer->memory);
+        vkUnmapMemory(device, memory);
     }
-    vkBindBufferMemory(device, buffer->buffer, buffer->memory, 0);
 
-    VkBufferDeviceAddressInfo bufferDeviceAddressInfo = {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
-    bufferDeviceAddressInfo.buffer = buffer->buffer;
-    buffer->deviceAddress = vkGetBufferDeviceAddress(device, &bufferDeviceAddressInfo);
+    // bind device memory to buffer object
+    vkBindBufferMemory(device, buffer, memory, 0);
 }
 
 void VulkanHelpers::destroyBuffer(VkDevice device, Buffer* buffer){
@@ -87,25 +113,23 @@ void VulkanHelpers::submitCommandBufferBlocking(VkDevice device, VkCommandBuffer
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
     CHECK_ERROR(vkQueueSubmit(queue, 1, &submitInfo, nullptr));
+    
+    // wait for all submitted commands to finish
+    // "vkQueueWaitIdle is equivalent to having submitted a valid fence to every previously executed queue submission command that accepts a fence, then waiting for all of those fences to signal[...]"" 
     CHECK_ERROR(vkQueueWaitIdle(queue));
 }
 
-void VulkanHelpers::createAccelerationStructureBuffer(VkDevice device, VkPhysicalDevice physicalDevice, AccelerationStructure &accelerationStructure, VkAccelerationStructureBuildSizesInfoKHR buildSizesInfo){
-    VkBufferCreateInfo bufferCreateInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    bufferCreateInfo.size = buildSizesInfo.accelerationStructureSize;
-    bufferCreateInfo.usage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-    CHECK_ERROR(vkCreateBuffer(device, &bufferCreateInfo, nullptr, &accelerationStructure.buffer))
-
-    VkMemoryRequirements memoryRequirements{};
-    vkGetBufferMemoryRequirements(device, accelerationStructure.buffer, &memoryRequirements);
-    VkMemoryAllocateFlagsInfo memoryAllocateFlagsInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
-    memoryAllocateFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT_KHR;
-    VkMemoryAllocateInfo memoryAllocateInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    memoryAllocateInfo.pNext = &memoryAllocateFlagsInfo;
-    memoryAllocateInfo.allocationSize = memoryRequirements.size;
-    memoryAllocateInfo.memoryTypeIndex = getMemoryTypeIndex(physicalDevice, memoryRequirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    CHECK_ERROR(vkAllocateMemory(device, &memoryAllocateInfo, nullptr, &accelerationStructure.memory))
-    CHECK_ERROR(vkBindBufferMemory(device, accelerationStructure.buffer, accelerationStructure.memory, 0))
+void VulkanHelpers::createBuffer(VkDevice device, VkPhysicalDevice physicalDevice, VkDeviceSize size, AccelerationStructure& accelerationStructure){
+    
+    VulkanHelpers::createBuffer(device, physicalDevice, 
+                                VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                size,
+                                accelerationStructure.buffer,
+                                accelerationStructure.memory);
+    
+    // get device address of device memory
+    accelerationStructure.deviceAddress = getBufferDeviceAddress(device, &accelerationStructure.buffer);    
 }
 void VulkanHelpers::destroyAccelerationStructureBuffer(VkDevice device, AccelerationStructure* as){
     if(as->memory != VK_NULL_HANDLE){

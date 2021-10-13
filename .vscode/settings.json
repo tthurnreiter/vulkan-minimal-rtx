@@ -59,5 +59,7 @@
         "thread": "cpp",
         "cinttypes": "cpp",
         "typeinfo": "cpp"
-    }
+    },
+    "shaderc-lint.glslcArgs": "--target-env=vulkan1.2",
+
 }

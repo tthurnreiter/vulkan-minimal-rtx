@@ -1,9 +1,19 @@
-//TODO replace all the runtime_error with actual error checking (check result type)
-//     make a macro for checking for VK_SUCCESS
-//TODO volk: implement "Optimizing device calls" from Readme
+// TODO when using Buffers from shaders use dynamic storage buffers [1]
+// TODO Use dedicated memory allocations (VK_KHR_dedicated_allocation, core in VK 1.1) when appropriate. [1]
+// TODO Use VK_KHR_get_memory_requirements2 (core in VK 1.1) to check whether an image/buffer need dedicated allocation. [1]
+// TODO Investigate vkCmdCopyBufferToImage (and vice versa) https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/vkCmdCopyBufferToImage.html 
 
-//TODO BLAS compaction
 
+// [1] (per NVidia Vulkan Best Practices, https://developer.nvidia.com/blog/vulkan-dos-donts/)
+
+
+/**
+ *  instead of including <vulkan/vulkan.h> directly, we use volk (https://github.com/zeux/volk)
+ * volk is a loader that dynamically loads the Vulkan entrypoints without having to
+ * link the Vulkan library directly 
+ * VOLK_IMPLEMENTATION needs to be defined exactly once in the source, 
+ * and all header files must include <volk.h> instead of <vulkan.h>
+ */
 #define VOLK_IMPLEMENTATION
 #include <volk.h>
 
@@ -18,15 +28,16 @@
 
 #include <iostream>
 #include <algorithm>
+#include <glm/glm.hpp>
+#include <chrono>
 
 #include "VulkanHelpers.h"
 #include "common.h"
 
-const int image_width = 800;
-const int image_height = 600;
+const int image_width = 1000;
+const int image_height = 1000;
 
-//const std::string ModelPath = "../render-data/CornellBox-Original-Merged.obj";
-const std::string ModelPath = "../render-data/sponza.fixed.obj";
+std::vector<std::string> searchPaths = { "..", "." };
 
 const std::string OutFilename = "test";
 
@@ -48,6 +59,8 @@ class BasicVulkan
         void loadModelFromFile(std::string modelPath);
         void transferToCPU();
         void writeImage(const std::string& filename, void **data);
+        void writeFile(const std::string& filename, std::vector<std::string>& directories);
+        static std::string findFile(const std::string& filename, std::vector<std::string>& directories);
     private:
         VkInstance instance;
         VkPhysicalDevice physicalDevice;
@@ -78,6 +91,8 @@ class BasicVulkan
 
         AccelerationStructure blas{};
         AccelerationStructure tlas{};
+
+        std::string ModelPath;
 };
 
 int main(int argc, char** argv){
@@ -85,6 +100,8 @@ int main(int argc, char** argv){
 }
 
 BasicVulkan::BasicVulkan(){
+    ModelPath = BasicVulkan::findFile("render-data/sponza.fixed.obj", searchPaths);
+
     createVulkanInstance();
     initDevice();
     loadModelFromFile(ModelPath);
@@ -92,6 +109,9 @@ BasicVulkan::BasicVulkan(){
     createBottomLevelAccelerationStructure();
     createTopLevelAccelerationStructure();
     createPipeline();
+    
+    //usleep(1*1000*1000);
+
     run();
     transferToCPU();
 }
@@ -116,6 +136,44 @@ BasicVulkan::~BasicVulkan(){
 }
 
 void BasicVulkan::run(){
+    // calculate values for push constants
+    PushConstants pushConstants{};
+    glm::vec3 camPos = glm::vec3(-516,300,0);
+    glm::vec3 camUp = glm::vec3(0,1,0);
+    glm::vec3 camDir = glm::vec3(1,0.2,0);
+    camDir = normalize(camDir);
+
+    float fovy = 65;
+    float aspect = float(image_width)/image_height;
+    float near_h = glm::tan(float(M_PI) * fovy * 0.5f / 180.0f);
+    float near_w = aspect*near_h;
+
+    glm::vec3 U = glm::cross(camDir, camUp);
+    glm::vec3 V = glm::cross(U, camDir);
+
+    pushConstants.camDirX = camDir.x;
+    pushConstants.camDirY = camDir.y;
+    pushConstants.camDirZ = camDir.z;
+
+    pushConstants.camPosX = camPos.x;
+    pushConstants.camPosY = camPos.y;
+    pushConstants.camPosZ = camPos.z;
+
+    pushConstants.Ux = U.x;
+    pushConstants.Uy = U.y;
+    pushConstants.Uz = U.z;
+
+    pushConstants.Vx = V.x;
+    pushConstants.Vy = V.y;
+    pushConstants.Vz = V.z;
+
+    pushConstants.near_w = near_w;
+    pushConstants.near_h = near_h;
+
+    pushConstants.term1u = (2*near_w)/image_width;
+
+    pushConstants.term1v = (2*near_h)/image_height;
+
     VkStridedDeviceAddressRegionKHR sbtRaygenRegion, sbtMissRegion, sbtHitRegion, sbtCallableRegion;
     sbtRaygenRegion.deviceAddress = sbtBuffer.deviceAddress;
     sbtRaygenRegion.stride = sbtStride;
@@ -135,6 +193,7 @@ void BasicVulkan::run(){
     VulkanHelpers::beginCommandBuffer(commandBuffer);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, pipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, pipelineLayout, 0, 1, &descriptorSet, 0, 0);
+    vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(PushConstants), &pushConstants);
     vkCmdTraceRaysKHR(commandBuffer,
                       &sbtRaygenRegion,
                       &sbtMissRegion,
@@ -143,12 +202,13 @@ void BasicVulkan::run(){
                       image_width,
                       image_height,
                       1);
+   auto start = std::chrono::steady_clock::now();
    VulkanHelpers::submitCommandBufferBlocking(device, commandBuffer, queue);
+   auto elapsed = std::chrono::steady_clock::now() - start;
+   std::cout << "Elapsed: " << std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() << " microseconds" << std::endl;
 }
 
 void BasicVulkan::createVulkanInstance(){
-    //This function creates the Vulkan Instance
-
     //volk needs to be initialized before anything else
     CHECK_ERROR(volkInitialize());
 
@@ -159,9 +219,22 @@ void BasicVulkan::createVulkanInstance(){
     instanceCreateInfo.pApplicationInfo = &applicationInfo;
 
 #ifdef DEBUG
-    // Enable Validation layer that provides error messages and debug output  
-    // TODO check here if requested layers are actually available. if not vkCreateInstance fails 
-    const std::vector<const char*> enabledLayerNames = { "VK_LAYER_KHRONOS_validation" };
+    // Enable Validation layer
+    // Vulkan layers can intercept API calls and modify their behaviour
+    // The Validation layer is provided by the Vulkan SDK and adds error messages and debug output
+    //first check if Validation layer is available
+    std::vector<const char*> enabledLayerNames{};
+    const char* validationLayerName = "VK_LAYER_KHRONOS_validation";
+    uint32_t availableInstanceLayerPropertiesCount = 0;
+    CHECK_ERROR(vkEnumerateInstanceLayerProperties(&availableInstanceLayerPropertiesCount, nullptr));
+    std::vector<VkLayerProperties>availableInstanceLayerProperties(availableInstanceLayerPropertiesCount);
+    CHECK_ERROR(vkEnumerateInstanceLayerProperties(&availableInstanceLayerPropertiesCount, availableInstanceLayerProperties.data()));
+    for(auto& instanceLayerProperty : availableInstanceLayerProperties){
+        if(strcmp(validationLayerName, instanceLayerProperty.layerName) == 0){
+            //validation layer is availble, add it to list of enabled layers
+            enabledLayerNames.push_back(validationLayerName);
+        }
+    }
     instanceCreateInfo.ppEnabledLayerNames = enabledLayerNames.data();
     instanceCreateInfo.enabledLayerCount = static_cast<uint32_t>(enabledLayerNames.size());
 
@@ -186,8 +259,8 @@ void BasicVulkan::createVulkanInstance(){
                 return VK_FALSE;
             };
     // pNext-chain all the debug settings together
-    instanceCreateInfo.pNext = &debugUtilsMessengerCreateInfo;
     debugUtilsMessengerCreateInfo.pNext = &validationFeatures; 
+    instanceCreateInfo.pNext = &debugUtilsMessengerCreateInfo;
 #endif //DEBUG
 
     CHECK_ERROR(vkCreateInstance(&instanceCreateInfo, nullptr, &instance));
@@ -290,11 +363,17 @@ void BasicVulkan::initDevice(){
     deviceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(enabledDeviceExtensionNames.size());
     deviceCreateInfo.pQueueCreateInfos = &deviceQueueCreateInfo;
     deviceCreateInfo.queueCreateInfoCount = 1;
-    // pNext-chain the enabled features on to the 
+    // pNext-chain the enabled features on to the deviceCreateInfo struct
     deviceCreateInfo.pNext = &physicalDeviceVulkan12Features;
     physicalDeviceVulkan12Features.pNext = &physicalDeviceRayTracingPipelineFeatures;
     physicalDeviceRayTracingPipelineFeatures.pNext = &physicalDeviceAccelerationStructureFeatures;
     CHECK_ERROR(vkCreateDevice(physicalDevice, &deviceCreateInfo, nullptr, &device));
+    
+    // This volk call is not strictly necessary, but improves performance
+    // it lets volk know that we use only a single VkDevice object
+    volkLoadDevice(device);
+
+    // Get the queue we will submit our command buffers to from the queue family we selected earlier 
     vkGetDeviceQueue(device, suitableQueueFamily, 0, &queue);
 
     // Create a CommandPool that we will later allocate a CommandBuffer from that holds the 
@@ -323,7 +402,7 @@ void BasicVulkan::initBuffers(){
                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                                 vertices.size()*sizeof(float),
-                                &vertexBuffer,
+                                vertexBuffer,
                                 vertices.data());
     // Create an Index Buffer on the GPU and upload our index data
     VulkanHelpers::createBuffer(device, 
@@ -331,10 +410,15 @@ void BasicVulkan::initBuffers(){
                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                                 indices.size()*sizeof(uint32_t),
-                                &indexBuffer,
+                                indexBuffer,
                                 indices.data());
 
-    //Images
+    // Create the two VkImage objects
+    // VkImages are basically fancy VkBuffer objects with some logic on top of it
+    // VkImages 
+    // Uniform Buffers would be fastest to access from shaders because they fit into shader local storage, but are limited to ~65kB (on Nvidia), which is too little for most scenes
+
+    // we set storageImage up with VK
     VkImageCreateInfo imageCreateInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     imageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
     imageCreateInfo.format = VK_FORMAT_R32G32B32A32_SFLOAT;
@@ -439,8 +523,8 @@ void BasicVulkan::createBottomLevelAccelerationStructure(){
                                             &buildGeometryInfoBLAS,
                                             &numTriangles,
                                             &buildSizesInfoBLAS);
-    VulkanHelpers::createAccelerationStructureBuffer(device, physicalDevice,
-                                                     blas, buildSizesInfoBLAS);
+    VulkanHelpers::createBuffer(device, physicalDevice, buildSizesInfoBLAS.accelerationStructureSize, blas);
+
     VkAccelerationStructureCreateInfoKHR createInfoBLAS = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
     createInfoBLAS.buffer = blas.buffer;
     createInfoBLAS.size = buildSizesInfoBLAS.accelerationStructureSize;
@@ -452,7 +536,7 @@ void BasicVulkan::createBottomLevelAccelerationStructure(){
                                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                                 buildSizesInfoBLAS.buildScratchSize,
-                                &scratchBuffer);
+                                scratchBuffer);
 
     buildGeometryInfoBLAS.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
     buildGeometryInfoBLAS.dstAccelerationStructure = blas.handle;
@@ -498,7 +582,7 @@ void BasicVulkan::createTopLevelAccelerationStructure(){
                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                                 sizeof(VkAccelerationStructureInstanceKHR),
-                                &instancesBuffer,
+                                instancesBuffer,
                                 &instance);
 
     VkAccelerationStructureGeometryKHR geometryTLAS = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
@@ -523,7 +607,7 @@ void BasicVulkan::createTopLevelAccelerationStructure(){
                                             &numInstances,
                                             &buildSizesInfoTLAS);
     
-    VulkanHelpers::createAccelerationStructureBuffer(device, physicalDevice, tlas, buildSizesInfoTLAS);
+    VulkanHelpers::createBuffer(device, physicalDevice, buildSizesInfoTLAS.accelerationStructureSize, tlas);
 
     VkAccelerationStructureCreateInfoKHR createInfoTLAS = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
     createInfoTLAS.buffer = tlas.buffer;
@@ -536,7 +620,7 @@ void BasicVulkan::createTopLevelAccelerationStructure(){
                                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                                 buildSizesInfoTLAS.buildScratchSize,
-                                &scratchBuffer);
+                                scratchBuffer);
 
     buildGeometryInfoTLAS.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
     buildGeometryInfoTLAS.dstAccelerationStructure = tlas.handle;
@@ -580,7 +664,7 @@ void BasicVulkan::createPipeline(){
     bindings.back().descriptorCount = 1;
     bindings.back().stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
 
-    bindings.push_back(VkDescriptorSetLayoutBinding{});
+    /* bindings.push_back(VkDescriptorSetLayoutBinding{});
     bindings.back().binding = BINDING_VERTICES;
     bindings.back().descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings.back().descriptorCount = 1;
@@ -590,25 +674,32 @@ void BasicVulkan::createPipeline(){
     bindings.back().binding = BINDING_INDICES;
     bindings.back().descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings.back().descriptorCount = 1;
-    bindings.back().stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+    bindings.back().stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR; */
 
     VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     descriptorSetLayoutCreateInfo.bindingCount = static_cast<uint32_t>(bindings.size());
     descriptorSetLayoutCreateInfo.pBindings = bindings.data();
     CHECK_ERROR(vkCreateDescriptorSetLayout(device, &descriptorSetLayoutCreateInfo, nullptr, &descriptorSetLayout));
 
-    //Pipeline Layout
+    VkPushConstantRange pushConstantRange{};
+    pushConstantRange.size = sizeof(PushConstants);
+    pushConstantRange.offset = 0;
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+
+    //create Pipeline Layout
     VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     pipelineLayoutCreateInfo.setLayoutCount = 1;
     pipelineLayoutCreateInfo.pSetLayouts = &descriptorSetLayout;
+    pipelineLayoutCreateInfo.pushConstantRangeCount = 1;
+    pipelineLayoutCreateInfo.pPushConstantRanges = &pushConstantRange;
     CHECK_ERROR(vkCreatePipelineLayout(device, &pipelineLayoutCreateInfo, nullptr, &pipelineLayout));
 
     //Shaders
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
     
-    VkShaderModule raygenShader = VulkanHelpers::loadShaderFromFile(device, "../shaders/raytrace.rgen.spv");
-    VkShaderModule missShader = VulkanHelpers::loadShaderFromFile(device, "../shaders/raytrace.rmiss.spv");
-    VkShaderModule hitShader = VulkanHelpers::loadShaderFromFile(device, "../shaders/raytrace.rchit.spv");
+    VkShaderModule raygenShader = VulkanHelpers::loadShaderFromFile(device, findFile("shaders/raytrace.rgen.spv", searchPaths));
+    VkShaderModule missShader = VulkanHelpers::loadShaderFromFile(device, findFile("shaders/raytrace.rmiss.spv", searchPaths));
+    VkShaderModule hitShader = VulkanHelpers::loadShaderFromFile(device, findFile("shaders/raytrace.rchit.spv", searchPaths));
 
     //remember which Shaders we created so we can vkDestroyShaderModule() them later
     shaders.push_back(raygenShader);
@@ -686,7 +777,7 @@ void BasicVulkan::createPipeline(){
                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR,
                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                                 sbtSize,
-                                &sbtBuffer);
+                                sbtBuffer);
     void* mapped;
     vkMapMemory(device, sbtBuffer.memory, 0, VK_WHOLE_SIZE, 0, &mapped);
     uint8_t* mapped8 = reinterpret_cast<uint8_t*>(mapped);
@@ -699,7 +790,7 @@ void BasicVulkan::createPipeline(){
     std::vector<VkDescriptorPoolSize> descriptorPoolSizes = {
         { VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1},
         { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
-        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}
+        //{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}
     };
 
     VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -735,7 +826,7 @@ void BasicVulkan::createPipeline(){
     writeDescriptorSets.back().descriptorCount = 1;
     writeDescriptorSets.back().descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 
-    writeDescriptorSets.push_back(VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET});
+    /* writeDescriptorSets.push_back(VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET});
     VkDescriptorBufferInfo  vertexBufferDescriptor = {};
     vertexBufferDescriptor.buffer = vertexBuffer.buffer;
     vertexBufferDescriptor.range = VK_WHOLE_SIZE;
@@ -754,7 +845,7 @@ void BasicVulkan::createPipeline(){
     writeDescriptorSets.back().dstBinding = BINDING_VERTICES;
     writeDescriptorSets.back().descriptorCount = 1;
     writeDescriptorSets.back().descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-
+    */
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(writeDescriptorSets.size()), writeDescriptorSets.data(), 0, VK_NULL_HANDLE);
 
 }   
@@ -808,7 +899,7 @@ void BasicVulkan::transferToCPU(){
     
     void* data;
     vkMapMemory(device, transferImage.memory, 0, VK_WHOLE_SIZE, 0, &data);
-    writeImage("test3", &data);
+    writeImage(OutFilename, &data);
 }
 
 void BasicVulkan::loadModelFromFile(std::string modelPath){
@@ -884,4 +975,21 @@ void BasicVulkan::writeImage(const std::string& filename, void** data){
     //hacky way to convert .hdr to .png
     stbi_uc* image = stbi_load((filename + ".hdr").c_str(), &x, &y, &comp, 4);
     stbi_write_png((filename + ".png").c_str(), image_width, image_height, 4, image, 4*image_width);
+}
+
+std::string BasicVulkan::findFile(const std::string& filename, std::vector<std::string>& directories){
+    //look for file name directly first
+    directories.insert(directories.begin(), "");
+
+    std::ifstream stream;
+    for(const auto& dir : directories){
+        std::string file = dir + "/" + filename;
+        stream.open(file.c_str());
+        if(stream.is_open()){
+            return file;
+        }
+    }
+
+    //file not found
+    throw std::runtime_error("File not found: " + filename);
 }

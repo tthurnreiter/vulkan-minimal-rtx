@@ -15,9 +15,10 @@
                 "path": []
             },
             "forcedInclude": [
-                "/data/home/tht50171/vulkan-minimal-rtx/external/vulkan/include/vulkan/vulkan_core.h"
+                "/data/home/tht50171/vulkan-minimal-rtx/external/vulkan-headers/include/vulkan/vulkan_core.h"
             ],
-            "compilerArgs": []
+            "compilerArgs": [],
+            "configurationProvider": "ms-vscode.cmake-tools"
         },
         {
             "name": "cmake",

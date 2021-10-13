@@ -26,17 +26,19 @@ struct Image{
 
 class VulkanHelpers{
     public:
-      //static void createBuffer(VkDevice device, VkPhysicalDevice physicalDevice, VkBufferUsageFlags bufferUsageFlags, VkMemoryPropertyFlags memoryPropertyFlags, VkDeviceSize size, VkBuffer* buffer, VkDeviceMemory* memory, void* data=nullptr);
-      static void createBuffer(VkDevice device, VkPhysicalDevice physicalDevice, VkBufferUsageFlags bufferUsageFlags, VkMemoryPropertyFlags memoryPropertyFlags, VkDeviceSize size, Buffer* buffer, void* data=nullptr);
+      static void createBuffer(VkDevice device, VkPhysicalDevice physicalDevice, VkDeviceSize size, AccelerationStructure& accelerationStructure);
+      static void createBuffer(VkDevice device, VkPhysicalDevice physicalDevice, VkBufferUsageFlags bufferUsageFlags, VkMemoryPropertyFlags memoryPropertyFlags, VkDeviceSize size, Buffer& buffer, void* data=nullptr);
+      static void createBuffer(VkDevice device, VkPhysicalDevice physicalDevice, VkBufferUsageFlags bufferUsageFlags, VkMemoryPropertyFlags memoryPropertyFlags, VkDeviceSize size, VkBuffer& buffer, VkDeviceMemory& memory, void* data=nullptr);
       static void destroyBuffer(VkDevice device, Buffer* buffer);
-      static void createAccelerationStructureBuffer(VkDevice device, VkPhysicalDevice physicalDevice, AccelerationStructure &accelerationStructure, VkAccelerationStructureBuildSizesInfoKHR buildSizesInfo);
+      //static void createAccelerationStructureBuffer(VkDevice device, VkPhysicalDevice physicalDevice, AccelerationStructure &accelerationStructure, VkAccelerationStructureBuildSizesInfoKHR buildSizesInfo);
       static void destroyAccelerationStructureBuffer(VkDevice device, AccelerationStructure* as);
       static void createImage();
       static void destroyImage(VkDevice device, Image* image);
       static uint32_t getMemoryTypeIndex(VkPhysicalDevice physicalDevice, VkMemoryRequirements memoryRequirements, VkMemoryPropertyFlags memoryPropertyFlags);
+      static VkDeviceAddress getBufferDeviceAddress(VkDevice device, VkBuffer* buffer);
       static void beginCommandBuffer(VkCommandBuffer commandBuffer);
       static void submitCommandBufferBlocking(VkDevice device, VkCommandBuffer commandBuffer, VkQueue queue);
-      static VkShaderModule loadShaderFromFile(VkDevice device, std::string filepath);
+      static VkShaderModule loadShaderFromFile(VkDevice device, std::string shaderFilePath);
 
       static std::string getResultString(VkResult result);
       static void handleError(VkResult result, const char* file, int32_t line, const char* func, const char* failedCall);
