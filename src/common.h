@@ -2,7 +2,7 @@
 #define COMMON_H
 //This file holds common defines and structs shared between CPU C++ code and GPU GLSL shader code.
 
-//#define DEBUG
+#define DEBUG
 
 struct PushConstants
 {
@@ -15,9 +15,21 @@ struct PushConstants
 
 };
 
+struct vec3_ {
+    float x;
+    float y;
+    float z;
+};
+
+struct Ray {
+    vec3_ o;
+    vec3_ d;
+};
+
 #define BINDING_IMAGE 0
 #define BINDING_TLAS 1
-#define BINDING_VERTICES 2
-#define BINDING_INDICES 3
+#define BINDING_RAYS 2
+#define BINDING_VERTICES 3
+#define BINDING_INDICES 4
 
 #endif  //COMMON_H

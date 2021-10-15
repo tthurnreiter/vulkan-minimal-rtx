@@ -2,8 +2,7 @@
 // TODO Use dedicated memory allocations (VK_KHR_dedicated_allocation, core in VK 1.1) when appropriate. [1]
 // TODO Use VK_KHR_get_memory_requirements2 (core in VK 1.1) to check whether an image/buffer need dedicated allocation. [1]
 // TODO Investigate vkCmdCopyBufferToImage (and vice versa) https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/vkCmdCopyBufferToImage.html 
-
-
+//
 // [1] (per NVidia Vulkan Best Practices, https://developer.nvidia.com/blog/vulkan-dos-donts/)
 
 
@@ -57,6 +56,7 @@ class BasicVulkan
         void createBottomLevelAccelerationStructure();
         void createPipeline();
         void loadModelFromFile(std::string modelPath);
+        void generateCamRays();
         void transferToCPU();
         void writeImage(const std::string& filename, void **data);
         void writeFile(const std::string& filename, std::vector<std::string>& directories);
@@ -88,6 +88,8 @@ class BasicVulkan
         std::vector<uint32_t> indices;
         Buffer vertexBuffer{};
         Buffer indexBuffer{};
+        Buffer rayBuffer{};
+        Buffer rayBufferStaging{};
 
         AccelerationStructure blas{};
         AccelerationStructure tlas{};
@@ -128,6 +130,8 @@ BasicVulkan::~BasicVulkan(){
     VulkanHelpers::destroyAccelerationStructureBuffer(device, &blas);
     VulkanHelpers::destroyBuffer(device, &vertexBuffer);
     VulkanHelpers::destroyBuffer(device, &indexBuffer);
+    VulkanHelpers::destroyBuffer(device, &rayBuffer);
+    VulkanHelpers::destroyBuffer(device, &rayBufferStaging);
     VulkanHelpers::destroyImage(device, &storageImage);
     VulkanHelpers::destroyImage(device, &transferImage);
     vkDestroyCommandPool(this->device, this->commandPool, nullptr);
@@ -135,10 +139,53 @@ BasicVulkan::~BasicVulkan(){
     vkDestroyInstance(this->instance, nullptr);
 }
 
+void BasicVulkan::generateCamRays(){
+    std::vector<Ray> rays;
+    glm::vec3 camPos = glm::vec3(-516,300,0);
+    glm::vec3 camUp = glm::vec3(0,1,0);
+    glm::vec3 camDir = glm::vec3(1,0.2,0);
+    float fovy = 65;
+
+    float aspect = float(image_width)/image_height;
+    float near_h = glm::tan(float(M_PI) * fovy * 0.5f / 180.0f);
+    float near_w = aspect*near_h;
+
+    glm::vec3 U = glm::cross(camDir, camUp);
+    glm::vec3 V = glm::cross(U, camDir);
+
+    // create cam ray for each pixel
+    // the order is important because we need to access the rays from the shader in the same order
+    for(int pixelY = 0; pixelY < image_width; pixelY++){
+        for(int pixelX = 0; pixelX < image_height; pixelX++){
+            float u = (float(pixelX)+0.5f)/float(image_width) * 2.0f - 1.0f;
+        	float v = (float(pixelY)+0.5f)/float(image_height) * 2.0f - 1.0f;
+            glm::vec3 O = camPos;
+            glm::vec3 D = glm::normalize(camDir + U*u + V*v);
+            rays.push_back(Ray{ O.x, O.y, O.z, D.x, D.y, D.z });
+        }
+    }
+
+    // copy ray data into staging buffer
+    void* data;
+    vkMapMemory(device, rayBufferStaging.memory, 0, rayBufferStaging.size, 0, &data);
+    //assert(rays.size()*sizeof(Ray) == rayBufferStaging.size);
+    memcpy(data, rays.data(), rayBufferStaging.size);
+    vkUnmapMemory(device, rayBufferStaging.memory);
+
+    //copy ray data from staging into actual buffer
+    VkBufferCopy region{};
+    region.srcOffset = 0;
+    region.dstOffset = 0;
+    region.size = rayBuffer.size;
+    VulkanHelpers::beginCommandBuffer(commandBuffer);
+    vkCmdCopyBuffer(commandBuffer, rayBufferStaging.buffer, rayBuffer.buffer, 1, &region);
+    VulkanHelpers::submitCommandBufferBlocking(device, commandBuffer, queue);
+}
+
 void BasicVulkan::run(){
     // calculate values for push constants
     PushConstants pushConstants{};
-    glm::vec3 camPos = glm::vec3(-516,300,0);
+    /*glm::vec3 camPos = glm::vec3(-516,300,0);
     glm::vec3 camUp = glm::vec3(0,1,0);
     glm::vec3 camDir = glm::vec3(1,0.2,0);
     camDir = normalize(camDir);
@@ -172,7 +219,9 @@ void BasicVulkan::run(){
 
     pushConstants.term1u = (2*near_w)/image_width;
 
-    pushConstants.term1v = (2*near_h)/image_height;
+    pushConstants.term1v = (2*near_h)/image_height;*/
+
+    generateCamRays();
 
     VkStridedDeviceAddressRegionKHR sbtRaygenRegion, sbtMissRegion, sbtHitRegion, sbtCallableRegion;
     sbtRaygenRegion.deviceAddress = sbtBuffer.deviceAddress;
@@ -395,7 +444,6 @@ void BasicVulkan::initBuffers(){
     commandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     vkAllocateCommandBuffers(this->device, &commandBufferAllocateInfo, &commandBuffer);
     
-    //TODO use staging buffers?
     // Create a Vertex Buffer on the GPU and upload our vertex data
     VulkanHelpers::createBuffer(device, 
                                 physicalDevice, 
@@ -413,12 +461,28 @@ void BasicVulkan::initBuffers(){
                                 indexBuffer,
                                 indices.data());
 
-    // Create the two VkImage objects
-    // VkImages are basically fancy VkBuffer objects with some logic on top of it
-    // VkImages 
-    // Uniform Buffers would be fastest to access from shaders because they fit into shader local storage, but are limited to ~65kB (on Nvidia), which is too little for most scenes
+    //Create a ray data buffer on the GPU
+    VulkanHelpers::createBuffer(device, 
+                                physicalDevice, 
+                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                image_height*image_width*sizeof(Ray),
+                                rayBuffer);
+    //Create a staging buffer for ray data
+    VulkanHelpers::createBuffer(device, 
+                                physicalDevice, 
+                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                image_height*image_width*sizeof(Ray),
+                                rayBufferStaging);
 
-    // we set storageImage up with VK
+    // Create two VkImage objects that hold the result of our raytracing operations
+    // VkImages are basically fancy VkBuffer objects with some logic on top of it
+    // Uniform Buffers would be fastest to access from shaders because they fit into shader local storage, but are limited to ~65kB (on Nvidia), which is too little for most scenes
+    // We set up one image (storageImage) in a device-optimal way to be used during raytracing and one in a transfer-optimal way (transferImage), and copy data from one to the other after a raytracing batch
+    // TODO probably not a lot of benefit in doing this, try two plain Buffers and vkCmdCopyImageToBuffer
+
+    // setup storageImage
     VkImageCreateInfo imageCreateInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     imageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
     imageCreateInfo.format = VK_FORMAT_R32G32B32A32_SFLOAT;
@@ -439,7 +503,8 @@ void BasicVulkan::initBuffers(){
     memoryAllocateInfo.memoryTypeIndex = VulkanHelpers::getMemoryTypeIndex(physicalDevice, memoryRequirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     CHECK_ERROR(vkAllocateMemory(device, &memoryAllocateInfo, nullptr, &storageImage.memory));
     CHECK_ERROR(vkBindImageMemory(device, storageImage.image, storageImage.memory, 0));
-        
+    
+    //set up an ImageView which basically instructs the Pipeline how to access the image
     VkImageViewCreateInfo imageViewCreateInfo = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     imageViewCreateInfo.image = storageImage.image;
     imageViewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -451,8 +516,9 @@ void BasicVulkan::initBuffers(){
     imageViewCreateInfo.subresourceRange.levelCount     = 1;
     CHECK_ERROR(vkCreateImageView(device, &imageViewCreateInfo, nullptr, &storageImage.view));
 
-    imageCreateInfo.tiling  = VK_IMAGE_TILING_LINEAR;
-    imageCreateInfo.usage   = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    //create the transferImage, it is identical to storageImage except for the two options below
+    imageCreateInfo.tiling  = VK_IMAGE_TILING_LINEAR;   //"VK_IMAGE_TILING_LINEAR specifies linear tiling (texels are laid out in memory in row-major order, possibly with some padding on each row)."
+    imageCreateInfo.usage   = VK_IMAGE_USAGE_TRANSFER_DST_BIT;  
     CHECK_ERROR(vkCreateImage(device, &imageCreateInfo, nullptr, &transferImage.image));
         
     vkGetImageMemoryRequirements(device, transferImage.image, &memoryRequirements);
@@ -464,7 +530,9 @@ void BasicVulkan::initBuffers(){
                                                                            | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
     CHECK_ERROR(vkAllocateMemory(device, &memoryAllocateInfo, nullptr, &transferImage.memory))
     CHECK_ERROR(vkBindImageMemory(device, transferImage.image, transferImage.memory, 0));
-        
+    
+    // VkImages can currently only be created with VK_IMAGE_LAYOUT_UNDEFINED, before use we have to transfer the image(s) layout(s)
+    // to do this, we submit a Memory Barrier
     VulkanHelpers::beginCommandBuffer(commandBuffer);
     VkImageMemoryBarrier imageMemoryBarriers[2]{};
     imageMemoryBarriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -483,7 +551,7 @@ void BasicVulkan::initBuffers(){
     imageMemoryBarriers[1].srcAccessMask = 0;
     imageMemoryBarriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     imageMemoryBarriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    imageMemoryBarriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    imageMemoryBarriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; // we use transferImage as a copy destination
     imageMemoryBarriers[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     imageMemoryBarriers[1].subresourceRange.baseArrayLayer = 0;
     imageMemoryBarriers[1].subresourceRange.baseMipLevel = 0;
@@ -649,7 +717,10 @@ void BasicVulkan::createTopLevelAccelerationStructure(){
 }
 
 void BasicVulkan::createPipeline(){
-    //Descriptor Set Layout
+
+    // create Descriptor Set Layout
+    // this describes the type and number of objects that we want to bind to which stage of the Pipeline later.
+    // defining which objects we want to bind happens further down after the Descriptor Set object is successfully created.
     std::vector<VkDescriptorSetLayoutBinding> bindings;
 
     bindings.push_back(VkDescriptorSetLayoutBinding{});
@@ -664,7 +735,13 @@ void BasicVulkan::createPipeline(){
     bindings.back().descriptorCount = 1;
     bindings.back().stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
 
-    /* bindings.push_back(VkDescriptorSetLayoutBinding{});
+    bindings.push_back(VkDescriptorSetLayoutBinding{});
+    bindings.back().binding = BINDING_RAYS;
+    bindings.back().descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings.back().descriptorCount = 1;
+    bindings.back().stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+
+    bindings.push_back(VkDescriptorSetLayoutBinding{});
     bindings.back().binding = BINDING_VERTICES;
     bindings.back().descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings.back().descriptorCount = 1;
@@ -674,19 +751,22 @@ void BasicVulkan::createPipeline(){
     bindings.back().binding = BINDING_INDICES;
     bindings.back().descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings.back().descriptorCount = 1;
-    bindings.back().stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR; */
+    bindings.back().stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 
     VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     descriptorSetLayoutCreateInfo.bindingCount = static_cast<uint32_t>(bindings.size());
     descriptorSetLayoutCreateInfo.pBindings = bindings.data();
     CHECK_ERROR(vkCreateDescriptorSetLayout(device, &descriptorSetLayoutCreateInfo, nullptr, &descriptorSetLayout));
 
+    // Declare that we want to use Push Constants in our Pipeline
+    // "Push constants let us send a small amount of data (it has a limited size) to the shader, in a very simple and performant way."
+    // TODO still needed? remove?
     VkPushConstantRange pushConstantRange{};
     pushConstantRange.size = sizeof(PushConstants);
     pushConstantRange.offset = 0;
     pushConstantRange.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
 
-    //create Pipeline Layout
+    //create Pipeline Layout with our Descriptor Set Layout and Push Constants
     VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     pipelineLayoutCreateInfo.setLayoutCount = 1;
     pipelineLayoutCreateInfo.pSetLayouts = &descriptorSetLayout;
@@ -694,50 +774,44 @@ void BasicVulkan::createPipeline(){
     pipelineLayoutCreateInfo.pPushConstantRanges = &pushConstantRange;
     CHECK_ERROR(vkCreatePipelineLayout(device, &pipelineLayoutCreateInfo, nullptr, &pipelineLayout));
 
-    //Shaders
-    std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
-    
+    //Load shaders from files
     VkShaderModule raygenShader = VulkanHelpers::loadShaderFromFile(device, findFile("shaders/raytrace.rgen.spv", searchPaths));
     VkShaderModule missShader = VulkanHelpers::loadShaderFromFile(device, findFile("shaders/raytrace.rmiss.spv", searchPaths));
     VkShaderModule hitShader = VulkanHelpers::loadShaderFromFile(device, findFile("shaders/raytrace.rchit.spv", searchPaths));
 
-    //remember which Shaders we created so we can vkDestroyShaderModule() them later
+    //store Shader Module handles because we need to destroy them later
     shaders.push_back(raygenShader);
     shaders.push_back(missShader);
     shaders.push_back(hitShader);
 
-        
+    // create Shader Stages and Shader Groups (this is voodoo for now)
+    std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
     shaderStages.push_back(VkPipelineShaderStageCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO});
     shaderStages[0].stage = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
     shaderStages[0].module =  raygenShader;
     shaderStages[0].pName = "main";
-
     shaderStages.push_back(VkPipelineShaderStageCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO});
     shaderStages[1].stage = VK_SHADER_STAGE_MISS_BIT_KHR;
     shaderStages[1].module = missShader;
     shaderStages[1].pName = "main";
-
     shaderStages.push_back(VkPipelineShaderStageCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO});
     shaderStages[2].stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
     shaderStages[2].module = hitShader;
     shaderStages[2].pName = "main";
 
     std::vector<VkRayTracingShaderGroupCreateInfoKHR> shaderGroups;
-    
     shaderGroups.push_back(VkRayTracingShaderGroupCreateInfoKHR{VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR});
     shaderGroups[0].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
     shaderGroups[0].generalShader = 0;
     shaderGroups[0].closestHitShader = VK_SHADER_UNUSED_KHR;
     shaderGroups[0].anyHitShader = VK_SHADER_UNUSED_KHR;
     shaderGroups[0].intersectionShader = VK_SHADER_UNUSED_KHR;
-
     shaderGroups.push_back(VkRayTracingShaderGroupCreateInfoKHR{VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR});
     shaderGroups[1].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
     shaderGroups[1].generalShader = 1;
     shaderGroups[1].closestHitShader = VK_SHADER_UNUSED_KHR;
     shaderGroups[1].anyHitShader = VK_SHADER_UNUSED_KHR;
     shaderGroups[1].intersectionShader = VK_SHADER_UNUSED_KHR;
-
     shaderGroups.push_back(VkRayTracingShaderGroupCreateInfoKHR{VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR});
     shaderGroups[2].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
     shaderGroups[2].generalShader = VK_SHADER_UNUSED_KHR;
@@ -745,7 +819,7 @@ void BasicVulkan::createPipeline(){
     shaderGroups[2].anyHitShader = VK_SHADER_UNUSED_KHR;
     shaderGroups[2].intersectionShader = VK_SHADER_UNUSED_KHR;
 
-    //Create Pipeline
+    //Create Pipeline with all the infos we created above 
     VkRayTracingPipelineCreateInfoKHR pipelineCreateInfo = {VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR};
     pipelineCreateInfo.stageCount = static_cast<uint32_t>(shaderStages.size());
     pipelineCreateInfo.pStages = shaderStages.data();
@@ -755,7 +829,7 @@ void BasicVulkan::createPipeline(){
     pipelineCreateInfo.layout = pipelineLayout;
     CHECK_ERROR(vkCreateRayTracingPipelinesKHR(device, VK_NULL_HANDLE, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &(this->pipeline)));
 
-    //Create Shader Binding Table
+    //Create Shader Binding Table (voodoo again)
     VkPhysicalDeviceRayTracingPipelinePropertiesKHR rayTracingPipelineProperties = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
     VkPhysicalDeviceProperties2 physicalDeviceProperties = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
     physicalDeviceProperties.pNext = &rayTracingPipelineProperties;
@@ -786,11 +860,15 @@ void BasicVulkan::createPipeline(){
     }
     vkUnmapMemory(device, sbtBuffer.memory);
 
-    //Create Descriptor Sets
+    // Create Descriptor Sets
+    // this now actually defines which objects we want to bind to the pipeline.
+    // we defined a Descriptor Set Layout earlier that specifies number and type of these objects
+    
+    //first create a pool to allocate the descriptor sets from
     std::vector<VkDescriptorPoolSize> descriptorPoolSizes = {
         { VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1},
         { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
-        //{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}
     };
 
     VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -805,6 +883,7 @@ void BasicVulkan::createPipeline(){
     descriptorSetAllocateInfo.descriptorSetCount = 1;
     CHECK_ERROR(vkAllocateDescriptorSets(device, &descriptorSetAllocateInfo, &descriptorSet));
 
+    //create Descriptor Set for each binding: TLAS
     std::vector<VkWriteDescriptorSet> writeDescriptorSets;
     writeDescriptorSets.push_back(VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET});
     VkWriteDescriptorSetAccelerationStructureKHR descriptorAccelerationStructureInfo = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
@@ -816,6 +895,7 @@ void BasicVulkan::createPipeline(){
     writeDescriptorSets.back().descriptorCount = 1;
     writeDescriptorSets.back().descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
 
+    //create Descriptor Set for each binding: storageImage
     writeDescriptorSets.push_back(VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET});
     VkDescriptorImageInfo  storageImageDescriptor;
     storageImageDescriptor.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -826,7 +906,8 @@ void BasicVulkan::createPipeline(){
     writeDescriptorSets.back().descriptorCount = 1;
     writeDescriptorSets.back().descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 
-    /* writeDescriptorSets.push_back(VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET});
+    //create Descriptor Set for each binding: vertexBuffer
+    writeDescriptorSets.push_back(VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET});
     VkDescriptorBufferInfo  vertexBufferDescriptor = {};
     vertexBufferDescriptor.buffer = vertexBuffer.buffer;
     vertexBufferDescriptor.range = VK_WHOLE_SIZE;
@@ -836,6 +917,7 @@ void BasicVulkan::createPipeline(){
     writeDescriptorSets.back().descriptorCount = 1;
     writeDescriptorSets.back().descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 
+    //create Descriptor Set for each binding: indexBuffer
     writeDescriptorSets.push_back(VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET});
     VkDescriptorBufferInfo  indexBufferDescriptor = {};
     indexBufferDescriptor.buffer = indexBuffer.buffer;
@@ -845,9 +927,19 @@ void BasicVulkan::createPipeline(){
     writeDescriptorSets.back().dstBinding = BINDING_VERTICES;
     writeDescriptorSets.back().descriptorCount = 1;
     writeDescriptorSets.back().descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    */
-    vkUpdateDescriptorSets(device, static_cast<uint32_t>(writeDescriptorSets.size()), writeDescriptorSets.data(), 0, VK_NULL_HANDLE);
 
+    //create Descriptor Set for each binding: rayBuffer
+    writeDescriptorSets.push_back(VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET});
+    VkDescriptorBufferInfo  rayBufferDescriptor = {};
+    rayBufferDescriptor.buffer = rayBuffer.buffer;
+    rayBufferDescriptor.range = VK_WHOLE_SIZE;
+    writeDescriptorSets.back().pBufferInfo = &rayBufferDescriptor;
+    writeDescriptorSets.back().dstSet = descriptorSet;
+    writeDescriptorSets.back().dstBinding = BINDING_RAYS;
+    writeDescriptorSets.back().descriptorCount = 1;
+    writeDescriptorSets.back().descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+
+    vkUpdateDescriptorSets(device, static_cast<uint32_t>(writeDescriptorSets.size()), writeDescriptorSets.data(), 0, VK_NULL_HANDLE);
 }   
 
 void BasicVulkan::transferToCPU(){

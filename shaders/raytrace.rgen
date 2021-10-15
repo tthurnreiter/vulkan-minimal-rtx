@@ -4,6 +4,7 @@
 
 #extension GL_EXT_ray_tracing : require
 #extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_scalar_block_layout : require
 #include "../src/common.h"
 #include "shaderCommon.h"
 
@@ -13,6 +14,18 @@
 
 layout(binding = BINDING_IMAGE, set = 0, rgba32f) uniform image2D storageImage;
 layout(binding = BINDING_TLAS, set = 0) uniform accelerationStructureEXT tlas;
+layout(binding = BINDING_RAYS, set = 0, scalar) buffer Rays
+{
+  Ray rays[];
+};
+layout(binding = BINDING_VERTICES, set = 0, scalar) buffer Vertices
+{
+  float vertices[];
+};
+layout(binding = BINDING_INDICES, set = 0, scalar) buffer Indices
+{
+  uint indices[];
+};
 
 layout(location = 0) rayPayloadEXT RayPayload pld;
 
@@ -26,40 +39,12 @@ void main()
   //get image resolution and which pixel this shader works on
   const ivec2 resolution = imageSize(storageImage);
   const ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
+ 
+  //get ray data
+  int idx = pixel.x + (pixel.y*resolution.y);
+  vec3 rayO = vec3(rays[idx].o.x, rays[idx].o.y, rays[idx].o.z);
+  vec3 rayDir = vec3(rays[idx].d.x, rays[idx].d.y, rays[idx].d.z);
 
-  /*if(pixel.x >= resolution.x || pixel.y >= resolution.y){
-    debugPrintfEXT("RGEN Early exit! pixel.xy: %d|%d, resolution.xy: %d|%d\n", pixel.x, pixel.y, resolution.x, resolution.y);
-    return;
-  }*/
-
-  const vec3 camPos = vec3(pushConstants.camPosX, pushConstants.camPosY, pushConstants.camPosZ);
-  const vec3 camDir = vec3(pushConstants.camDirX, pushConstants.camDirY, pushConstants.camDirZ);
-  const vec3 U = vec3(pushConstants.Ux, pushConstants.Uy, pushConstants.Uz);
-  const vec3 V = vec3(pushConstants.Vx, pushConstants.Vy, pushConstants.Vz);
-  
-
-  /*
-  float fovy = 65;
-  float aspect = float(resolution.x)/resolution.y;
-  float near_h = tan(float(M_PI) * fovy * 0.5f / 180.0f);
-  float near_w = aspect*near_h;
-  float offsetX = 0;
-  float offsetY = 0;
-  float u = (float(pixel.x)+0.5f+offsetX)/float(resolution.x) * 2.0f - 1.0f;
-	float v = (float(pixel.y)+0.5f+offsetY)/float(resolution.y) * 2.0f - 1.0f;
-  u = u*pushConstants.near_w;
-  v = v*pushConstants.near_h; */
-  
-  // u = (x + 0.5 + offsetX) * (2*near_w)/w - near_w
-  float u = float(pixel.x+0.5) * pushConstants.term1u - pushConstants.near_w;
-  float v = float(pixel.y+0.5) * pushConstants.term1v - pushConstants.near_h;
-
-  vec3 rayO = camPos;
-  vec3 rayDir = normalize(camDir + U*u + V*v);
-
-/*   vec3 rayO = vec3(-516, 300, 0);
-  vec3 rayDir = vec3(0.980478, 0.196627, 0.000521);
- */
   float tmax = 10000.0f;
 
   traceRayEXT(tlas,                 // top level acceleration structure
@@ -75,14 +60,13 @@ void main()
               0);                   //location of ray payload
   
   vec4 color;
-  /*if(pld.rayHitSky == true){
+  if(pld.rayHitSky == true){
     color = vec4(0.0f, 0.0f, 0.5f, 0.0f);
   }
   else{
     float tmp = clamp(pld.hitT/10000, 0, 1);
     color = vec4(tmp, 0.0f, 0.0f, 0.0f);
-  }*/
+  }
   
-  color = vec4(float(pld.hitID), float(pld.hitID), float(pld.hitID), 0.0f);
   imageStore(storageImage, pixel, color);
 }

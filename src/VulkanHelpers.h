@@ -1,6 +1,7 @@
 #include <volk.h>
 #include <stdint.h>
 #include <cassert>
+#include <glm/glm.hpp>
 
 #define CHECK_ERROR(f) {VkResult result = (f); if(result != VK_SUCCESS){ VulkanHelpers::handleError(result, __FILE__, __LINE__, __func__, #f); }}
 
