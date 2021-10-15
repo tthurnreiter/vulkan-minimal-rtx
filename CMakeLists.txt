@@ -7,7 +7,10 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "../")
 
 set(CMAKE_CXX_STANDARD 17)
 
-#set(CMAKE_BUILD_TYPE Debug)
+set(CMAKE_BUILD_TYPE Debug)
+#set(CMAKE_BUILD_TYPE Release)
+
+set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -DDEBUG")
 
 #####################################################################################
 # Macro to add custom build for SPIR-V, with debug information (glslangvalidator's -g flag)

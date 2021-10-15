@@ -31,10 +31,8 @@ class VulkanHelpers{
       static void createBuffer(VkDevice device, VkPhysicalDevice physicalDevice, VkBufferUsageFlags bufferUsageFlags, VkMemoryPropertyFlags memoryPropertyFlags, VkDeviceSize size, Buffer& buffer, void* data=nullptr);
       static void createBuffer(VkDevice device, VkPhysicalDevice physicalDevice, VkBufferUsageFlags bufferUsageFlags, VkMemoryPropertyFlags memoryPropertyFlags, VkDeviceSize size, VkBuffer& buffer, VkDeviceMemory& memory, void* data=nullptr);
       static void destroyBuffer(VkDevice device, Buffer* buffer);
-      //static void createAccelerationStructureBuffer(VkDevice device, VkPhysicalDevice physicalDevice, AccelerationStructure &accelerationStructure, VkAccelerationStructureBuildSizesInfoKHR buildSizesInfo);
-      static void destroyAccelerationStructureBuffer(VkDevice device, AccelerationStructure* as);
-      static void createImage();
-      static void destroyImage(VkDevice device, Image* image);
+      static void destroyBuffer(VkDevice device, AccelerationStructure* as);
+      static void copyBuffer(VkDevice device, VkQueue queue, VkCommandBuffer commandBuffer, Buffer sourceBuffer, Buffer destinationBuffer);
       static uint32_t getMemoryTypeIndex(VkPhysicalDevice physicalDevice, VkMemoryRequirements memoryRequirements, VkMemoryPropertyFlags memoryPropertyFlags);
       static VkDeviceAddress getBufferDeviceAddress(VkDevice device, VkBuffer* buffer);
       static void beginCommandBuffer(VkCommandBuffer commandBuffer);

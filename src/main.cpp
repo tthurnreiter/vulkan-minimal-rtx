@@ -1,7 +1,7 @@
+// TODO use staging buffers for Vertices and Indices too?
 // TODO when using Buffers from shaders use dynamic storage buffers [1]
 // TODO Use dedicated memory allocations (VK_KHR_dedicated_allocation, core in VK 1.1) when appropriate. [1]
 // TODO Use VK_KHR_get_memory_requirements2 (core in VK 1.1) to check whether an image/buffer need dedicated allocation. [1]
-// TODO Investigate vkCmdCopyBufferToImage (and vice versa) https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/vkCmdCopyBufferToImage.html 
 //
 // [1] (per NVidia Vulkan Best Practices, https://developer.nvidia.com/blog/vulkan-dos-donts/)
 
@@ -33,8 +33,8 @@
 #include "VulkanHelpers.h"
 #include "common.h"
 
-const int image_width = 1000;
-const int image_height = 1000;
+const uint image_width = 1000;
+const uint image_height = 1000;
 
 std::vector<std::string> searchPaths = { "..", "." };
 
@@ -81,15 +81,14 @@ class BasicVulkan
         Buffer sbtBuffer;
         VkDeviceSize sbtStride;
 
-        Image storageImage;
-        Image transferImage;
-
         std::vector<float> vertices;
         std::vector<uint32_t> indices;
         Buffer vertexBuffer{};
         Buffer indexBuffer{};
         Buffer rayBuffer{};
         Buffer rayBufferStaging{};
+        Buffer resultsBuffer;
+        Buffer resultsBufferStaging;
 
         AccelerationStructure blas{};
         AccelerationStructure tlas{};
@@ -111,9 +110,6 @@ BasicVulkan::BasicVulkan(){
     createBottomLevelAccelerationStructure();
     createTopLevelAccelerationStructure();
     createPipeline();
-    
-    //usleep(1*1000*1000);
-
     run();
     transferToCPU();
 }
@@ -126,14 +122,14 @@ BasicVulkan::~BasicVulkan(){
     vkDestroyDescriptorPool(device, descriptorPool, nullptr);
     for_each(shaders.begin(), shaders.end(), [this](auto value){vkDestroyShaderModule(device, value, nullptr);});
     vkFreeCommandBuffers(this->device, this->commandPool, 1, &commandBuffer);
-    VulkanHelpers::destroyAccelerationStructureBuffer(device, &tlas);
-    VulkanHelpers::destroyAccelerationStructureBuffer(device, &blas);
+    VulkanHelpers::destroyBuffer(device, &tlas);
+    VulkanHelpers::destroyBuffer(device, &blas);
     VulkanHelpers::destroyBuffer(device, &vertexBuffer);
     VulkanHelpers::destroyBuffer(device, &indexBuffer);
     VulkanHelpers::destroyBuffer(device, &rayBuffer);
     VulkanHelpers::destroyBuffer(device, &rayBufferStaging);
-    VulkanHelpers::destroyImage(device, &storageImage);
-    VulkanHelpers::destroyImage(device, &transferImage);
+    VulkanHelpers::destroyBuffer(device, &resultsBufferStaging);
+    VulkanHelpers::destroyBuffer(device, &resultsBuffer);
     vkDestroyCommandPool(this->device, this->commandPool, nullptr);
     vkDestroyDevice(this->device, nullptr);
     vkDestroyInstance(this->instance, nullptr);
@@ -173,72 +169,36 @@ void BasicVulkan::generateCamRays(){
     vkUnmapMemory(device, rayBufferStaging.memory);
 
     //copy ray data from staging into actual buffer
-    VkBufferCopy region{};
-    region.srcOffset = 0;
-    region.dstOffset = 0;
-    region.size = rayBuffer.size;
-    VulkanHelpers::beginCommandBuffer(commandBuffer);
-    vkCmdCopyBuffer(commandBuffer, rayBufferStaging.buffer, rayBuffer.buffer, 1, &region);
-    VulkanHelpers::submitCommandBufferBlocking(device, commandBuffer, queue);
+    VulkanHelpers::copyBuffer(device, queue, commandBuffer, rayBufferStaging, rayBuffer);
 }
 
 void BasicVulkan::run(){
-    // calculate values for push constants
+    // assign values for push constants
     PushConstants pushConstants{};
-    /*glm::vec3 camPos = glm::vec3(-516,300,0);
-    glm::vec3 camUp = glm::vec3(0,1,0);
-    glm::vec3 camDir = glm::vec3(1,0.2,0);
-    camDir = normalize(camDir);
+    pushConstants.resolutionX = image_width;
+    pushConstants.resolutionY = image_height;
 
-    float fovy = 65;
-    float aspect = float(image_width)/image_height;
-    float near_h = glm::tan(float(M_PI) * fovy * 0.5f / 180.0f);
-    float near_w = aspect*near_h;
-
-    glm::vec3 U = glm::cross(camDir, camUp);
-    glm::vec3 V = glm::cross(U, camDir);
-
-    pushConstants.camDirX = camDir.x;
-    pushConstants.camDirY = camDir.y;
-    pushConstants.camDirZ = camDir.z;
-
-    pushConstants.camPosX = camPos.x;
-    pushConstants.camPosY = camPos.y;
-    pushConstants.camPosZ = camPos.z;
-
-    pushConstants.Ux = U.x;
-    pushConstants.Uy = U.y;
-    pushConstants.Uz = U.z;
-
-    pushConstants.Vx = V.x;
-    pushConstants.Vy = V.y;
-    pushConstants.Vz = V.z;
-
-    pushConstants.near_w = near_w;
-    pushConstants.near_h = near_h;
-
-    pushConstants.term1u = (2*near_w)/image_width;
-
-    pushConstants.term1v = (2*near_h)/image_height;*/
-
+    //generate cam rays
     generateCamRays();
 
+    //calculate Shader Binding Table header addresses (i.e. Shader addresses)
     VkStridedDeviceAddressRegionKHR sbtRaygenRegion, sbtMissRegion, sbtHitRegion, sbtCallableRegion;
     sbtRaygenRegion.deviceAddress = sbtBuffer.deviceAddress;
     sbtRaygenRegion.stride = sbtStride;
     sbtRaygenRegion.size = sbtStride;
 
-    sbtMissRegion = sbtRaygenRegion;
     sbtMissRegion.deviceAddress = sbtBuffer.deviceAddress + sbtStride;
+    sbtMissRegion.stride = sbtStride;
     sbtMissRegion.size = sbtStride;
 
-    sbtHitRegion = sbtRaygenRegion;
     sbtHitRegion.deviceAddress = sbtBuffer.deviceAddress + sbtStride*2;
+    sbtHitRegion.stride = sbtStride;
     sbtHitRegion.size = sbtStride;
 
-    sbtCallableRegion = sbtRaygenRegion;
+    sbtCallableRegion = sbtRaygenRegion;    //unused
     sbtCallableRegion.size = 0;
 
+    // start the actual raytracing
     VulkanHelpers::beginCommandBuffer(commandBuffer);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, pipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, pipelineLayout, 0, 1, &descriptorSet, 0, 0);
@@ -298,17 +258,17 @@ void BasicVulkan::createVulkanInstance(){
     debugUtilsMessengerCreateInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT
                                                     | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
                                                     | VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT;
-    debugUtilsMessengerCreateInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT 
-                                                | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT 
+    debugUtilsMessengerCreateInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT
+                                                | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
                                                 | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-    debugUtilsMessengerCreateInfo.pfnUserCallback = 
+    debugUtilsMessengerCreateInfo.pfnUserCallback =
         [](VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType,
             const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData){
                 std::cerr << "Instance Creation: " << pCallbackData->pMessage << std::endl;
                 return VK_FALSE;
             };
     // pNext-chain all the debug settings together
-    debugUtilsMessengerCreateInfo.pNext = &validationFeatures; 
+    debugUtilsMessengerCreateInfo.pNext = &validationFeatures;
     instanceCreateInfo.pNext = &debugUtilsMessengerCreateInfo;
 #endif //DEBUG
 
@@ -325,7 +285,7 @@ void BasicVulkan::initDevice(){
     }
     std::vector<VkPhysicalDevice> physicalDevices(physicalDeviceCount);
     vkEnumeratePhysicalDevices(instance, &physicalDeviceCount, physicalDevices.data());
-    
+
     // Select a physical device that has all the features we need
     // (e.g. the CPU might have a vulkan supported GPU that does not support ray tracing)
     for( int i = 0; i < physicalDeviceCount; i++ ){
@@ -333,12 +293,15 @@ void BasicVulkan::initDevice(){
         VkPhysicalDeviceFeatures2 physicalDeviceFeatures = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
         VkPhysicalDeviceRayTracingPipelineFeaturesKHR physicalDeviceRayTracingPipelineFeatures = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR };
         VkPhysicalDeviceAccelerationStructureFeaturesKHR physicalDeviceAccelerationStructureFeatures = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR };
-        physicalDeviceFeatures.pNext = &physicalDeviceRayTracingPipelineFeatures;
+        VkPhysicalDeviceVulkan12Features physicalDeviceVulkan12Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
+        physicalDeviceFeatures.pNext = &physicalDeviceRayTracingPipelineFeatures;  // chain the structs together so we can also get extension information
         physicalDeviceRayTracingPipelineFeatures.pNext = &physicalDeviceAccelerationStructureFeatures;
-        vkGetPhysicalDeviceFeatures2(physicalDevices[i], &physicalDeviceFeatures);
+        physicalDeviceAccelerationStructureFeatures.pNext = &physicalDeviceVulkan12Features;
+        vkGetPhysicalDeviceFeatures2(physicalDevices[i], &physicalDeviceFeatures);  //query supported features from GPU
 
-        if( (physicalDeviceRayTracingPipelineFeatures.rayTracingPipeline == true) &&        //we need raytracing pipeline support
-            (physicalDeviceAccelerationStructureFeatures.accelerationStructure == true) ){  //we need acceleration structure support
+        if( (physicalDeviceRayTracingPipelineFeatures.rayTracingPipeline == true) &&        //we need Raytracing Pipeline support
+            (physicalDeviceAccelerationStructureFeatures.accelerationStructure == true)     //we need Acceleration Structure support
+            && physicalDeviceVulkan12Features.bufferDeviceAddress == true){                 //we need Buffer Device Address support
             //TODO check for any other required features
             physicalDevice = physicalDevices[i];
             break;
@@ -352,8 +315,7 @@ void BasicVulkan::initDevice(){
         vkGetPhysicalDeviceProperties(physicalDevice, &physicalDeviceProperties);
         std::cout << "Vulkan: Using device " << physicalDeviceProperties.deviceName << std::endl;
     }
-    
-    
+
     // All GPU commands in Vulkan need to be submitted to a queue
     // First we need to select a queue family
     // A queue family is a group of one or multiple identical queues
@@ -384,7 +346,7 @@ void BasicVulkan::initDevice(){
 
     //the Vulkan extensions that are required for the application to work
     //TODO check if requested extensions are actually available. if not vkCreateDevice fails
-    std::vector<const char*> enabledDeviceExtensionNames = { "VK_KHR_deferred_host_operations", 
+    std::vector<const char*> enabledDeviceExtensionNames = { "VK_KHR_deferred_host_operations",
                                                              "VK_KHR_acceleration_structure",
                                                              "VK_KHR_ray_tracing_pipeline"};
 
@@ -407,7 +369,7 @@ void BasicVulkan::initDevice(){
     physicalDeviceAccelerationStructureFeatures.accelerationStructure = true;
 
     // Finally create the device
-    VkDeviceCreateInfo deviceCreateInfo = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};    
+    VkDeviceCreateInfo deviceCreateInfo = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     deviceCreateInfo.ppEnabledExtensionNames = enabledDeviceExtensionNames.data();
     deviceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(enabledDeviceExtensionNames.size());
     deviceCreateInfo.pQueueCreateInfos = &deviceQueueCreateInfo;
@@ -417,15 +379,15 @@ void BasicVulkan::initDevice(){
     physicalDeviceVulkan12Features.pNext = &physicalDeviceRayTracingPipelineFeatures;
     physicalDeviceRayTracingPipelineFeatures.pNext = &physicalDeviceAccelerationStructureFeatures;
     CHECK_ERROR(vkCreateDevice(physicalDevice, &deviceCreateInfo, nullptr, &device));
-    
+
     // This volk call is not strictly necessary, but improves performance
     // it lets volk know that we use only a single VkDevice object
     volkLoadDevice(device);
 
-    // Get the queue we will submit our command buffers to from the queue family we selected earlier 
+    // Get the queue we will submit our command buffers to from the queue family we selected earlier
     vkGetDeviceQueue(device, suitableQueueFamily, 0, &queue);
 
-    // Create a CommandPool that we will later allocate a CommandBuffer from that holds the 
+    // Create a CommandPool that we will later allocate a CommandBuffer from that holds the
     // commands we want to submit to a queue on the GPU
     VkCommandPoolCreateInfo commandPoolCreateInfo = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     commandPoolCreateInfo.queueFamilyIndex = suitableQueueFamily;
@@ -443,18 +405,16 @@ void BasicVulkan::initBuffers(){
     commandBufferAllocateInfo.commandPool = commandPool;
     commandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     vkAllocateCommandBuffers(this->device, &commandBufferAllocateInfo, &commandBuffer);
-    
+
     // Create a Vertex Buffer on the GPU and upload our vertex data
-    VulkanHelpers::createBuffer(device, 
-                                physicalDevice, 
+    VulkanHelpers::createBuffer(device, physicalDevice,
                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                                 vertices.size()*sizeof(float),
                                 vertexBuffer,
                                 vertices.data());
     // Create an Index Buffer on the GPU and upload our index data
-    VulkanHelpers::createBuffer(device, 
-                                physicalDevice, 
+    VulkanHelpers::createBuffer(device, physicalDevice,
                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                                 indices.size()*sizeof(uint32_t),
@@ -462,128 +422,54 @@ void BasicVulkan::initBuffers(){
                                 indices.data());
 
     //Create a ray data buffer on the GPU
-    VulkanHelpers::createBuffer(device, 
-                                physicalDevice, 
+    VulkanHelpers::createBuffer(device, physicalDevice,
                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                                 image_height*image_width*sizeof(Ray),
                                 rayBuffer);
     //Create a staging buffer for ray data
-    VulkanHelpers::createBuffer(device, 
-                                physicalDevice, 
+    VulkanHelpers::createBuffer(device, physicalDevice,
                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                                 image_height*image_width*sizeof(Ray),
                                 rayBufferStaging);
-
-    // Create two VkImage objects that hold the result of our raytracing operations
-    // VkImages are basically fancy VkBuffer objects with some logic on top of it
-    // Uniform Buffers would be fastest to access from shaders because they fit into shader local storage, but are limited to ~65kB (on Nvidia), which is too little for most scenes
-    // We set up one image (storageImage) in a device-optimal way to be used during raytracing and one in a transfer-optimal way (transferImage), and copy data from one to the other after a raytracing batch
-    // TODO probably not a lot of benefit in doing this, try two plain Buffers and vkCmdCopyImageToBuffer
-
-    // setup storageImage
-    VkImageCreateInfo imageCreateInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    imageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageCreateInfo.format = VK_FORMAT_R32G32B32A32_SFLOAT;
-    imageCreateInfo.extent = {image_width, image_height, 1};
-    imageCreateInfo.mipLevels = 1;
-    imageCreateInfo.arrayLayers = 1;
-    imageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    imageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imageCreateInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    imageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    imageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    CHECK_ERROR(vkCreateImage(device, &imageCreateInfo, nullptr, &storageImage.image));
-
-    VkMemoryRequirements memoryRequirements;
-    vkGetImageMemoryRequirements(device, storageImage.image, &memoryRequirements);
-    VkMemoryAllocateInfo memoryAllocateInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    memoryAllocateInfo.allocationSize = memoryRequirements.size;
-    memoryAllocateInfo.memoryTypeIndex = VulkanHelpers::getMemoryTypeIndex(physicalDevice, memoryRequirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    CHECK_ERROR(vkAllocateMemory(device, &memoryAllocateInfo, nullptr, &storageImage.memory));
-    CHECK_ERROR(vkBindImageMemory(device, storageImage.image, storageImage.memory, 0));
-    
-    //set up an ImageView which basically instructs the Pipeline how to access the image
-    VkImageViewCreateInfo imageViewCreateInfo = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-    imageViewCreateInfo.image = storageImage.image;
-    imageViewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    imageViewCreateInfo.format = imageCreateInfo.format;
-    imageViewCreateInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    imageViewCreateInfo.subresourceRange.baseArrayLayer = 0;
-    imageViewCreateInfo.subresourceRange.layerCount     = 1;
-    imageViewCreateInfo.subresourceRange.baseMipLevel   = 0;
-    imageViewCreateInfo.subresourceRange.levelCount     = 1;
-    CHECK_ERROR(vkCreateImageView(device, &imageViewCreateInfo, nullptr, &storageImage.view));
-
-    //create the transferImage, it is identical to storageImage except for the two options below
-    imageCreateInfo.tiling  = VK_IMAGE_TILING_LINEAR;   //"VK_IMAGE_TILING_LINEAR specifies linear tiling (texels are laid out in memory in row-major order, possibly with some padding on each row)."
-    imageCreateInfo.usage   = VK_IMAGE_USAGE_TRANSFER_DST_BIT;  
-    CHECK_ERROR(vkCreateImage(device, &imageCreateInfo, nullptr, &transferImage.image));
-        
-    vkGetImageMemoryRequirements(device, transferImage.image, &memoryRequirements);
-    memoryAllocateInfo.allocationSize = memoryRequirements.size;
-    memoryAllocateInfo.memoryTypeIndex = VulkanHelpers::getMemoryTypeIndex(physicalDevice,
-                                                                           memoryRequirements,
-                                                                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-                                                                           | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-                                                                           | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
-    CHECK_ERROR(vkAllocateMemory(device, &memoryAllocateInfo, nullptr, &transferImage.memory))
-    CHECK_ERROR(vkBindImageMemory(device, transferImage.image, transferImage.memory, 0));
-    
-    // VkImages can currently only be created with VK_IMAGE_LAYOUT_UNDEFINED, before use we have to transfer the image(s) layout(s)
-    // to do this, we submit a Memory Barrier
-    VulkanHelpers::beginCommandBuffer(commandBuffer);
-    VkImageMemoryBarrier imageMemoryBarriers[2]{};
-    imageMemoryBarriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    imageMemoryBarriers[0].image = storageImage.image;
-    imageMemoryBarriers[0].srcAccessMask = 0;
-    imageMemoryBarriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-    imageMemoryBarriers[0].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    imageMemoryBarriers[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    imageMemoryBarriers[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    imageMemoryBarriers[0].subresourceRange.baseArrayLayer = 0;
-    imageMemoryBarriers[0].subresourceRange.baseMipLevel = 0;
-    imageMemoryBarriers[0].subresourceRange.layerCount = 1;
-    imageMemoryBarriers[0].subresourceRange.levelCount = 1;
-    imageMemoryBarriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    imageMemoryBarriers[1].image = transferImage.image;
-    imageMemoryBarriers[1].srcAccessMask = 0;
-    imageMemoryBarriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    imageMemoryBarriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    imageMemoryBarriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; // we use transferImage as a copy destination
-    imageMemoryBarriers[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    imageMemoryBarriers[1].subresourceRange.baseArrayLayer = 0;
-    imageMemoryBarriers[1].subresourceRange.baseMipLevel = 0;
-    imageMemoryBarriers[1].subresourceRange.layerCount = 1;
-    imageMemoryBarriers[1].subresourceRange.levelCount = 1;
-    vkCmdPipelineBarrier(commandBuffer,
-                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                         0, 0, nullptr, 0, nullptr,
-                         2, imageMemoryBarriers);
-    VulkanHelpers::submitCommandBufferBlocking(device, commandBuffer, queue);
+    //Create a result data buffer on the GPU
+    VulkanHelpers::createBuffer(device, physicalDevice,
+                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT ,
+                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                image_height*image_width*sizeof(RaytraceResult),
+                                resultsBuffer);
+    //Create a staging buffer for result data
+    VulkanHelpers::createBuffer(device, physicalDevice,
+                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                image_height*image_width*sizeof(RaytraceResult),
+                                resultsBufferStaging);
 }
 
 void BasicVulkan::createBottomLevelAccelerationStructure(){
+    // Define the type of geometry this Acceleration Structure will contain
     VkAccelerationStructureGeometryKHR geometryBLAS = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
-    geometryBLAS.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
-    geometryBLAS.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-    geometryBLAS.geometry.triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
-    geometryBLAS.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-    geometryBLAS.geometry.triangles.vertexData.deviceAddress = vertexBuffer.deviceAddress;
-    geometryBLAS.geometry.triangles.maxVertex = static_cast<uint32_t>(vertices.size()/3-1);
-    geometryBLAS.geometry.triangles.vertexStride = 3*sizeof(float);
-    geometryBLAS.geometry.triangles.indexType = VK_INDEX_TYPE_UINT32;
-    geometryBLAS.geometry.triangles.indexData.deviceAddress = indexBuffer.deviceAddress;
-    geometryBLAS.geometry.triangles.transformData.deviceAddress = 0;
+    geometryBLAS.geometry.triangles = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR};
+    geometryBLAS.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;                                            //for simplicity, treat all triangles as opaque
+    geometryBLAS.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;                                 //geometry consists of triangles
+    geometryBLAS.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;                  //each vertex is defined by 3 floats
+    geometryBLAS.geometry.triangles.vertexData.deviceAddress = vertexBuffer.deviceAddress;      //vertex data is in vertexBuffer
+    geometryBLAS.geometry.triangles.maxVertex = static_cast<uint32_t>(vertices.size()/3-1);     //highest possible number of vertices
+    geometryBLAS.geometry.triangles.vertexStride = 3*sizeof(float);                             //each new vertex starts a distance of 3 floats after the last one
+    geometryBLAS.geometry.triangles.indexType = VK_INDEX_TYPE_UINT32;                           //vertices are referenced by uint32 indices
+    geometryBLAS.geometry.triangles.indexData.deviceAddress = indexBuffer.deviceAddress;        //index data is in indexBuffer
+    geometryBLAS.geometry.triangles.transformData.deviceAddress = 0;                            //no transformation
 
+    // specify build options
     VkAccelerationStructureBuildGeometryInfoKHR buildGeometryInfoBLAS = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
-    buildGeometryInfoBLAS.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-    buildGeometryInfoBLAS.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
-    buildGeometryInfoBLAS.geometryCount = 1;
-    buildGeometryInfoBLAS.pGeometries = &geometryBLAS;
-    
+    buildGeometryInfoBLAS.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;               // create a Bottom Level Acceleration Structure
+    buildGeometryInfoBLAS.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;    // prefer fast trace over fast build
+    buildGeometryInfoBLAS.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;                // we are building, not updating
+    buildGeometryInfoBLAS.geometryCount = 1;                                                    // 1 geometry
+    buildGeometryInfoBLAS.pGeometries = &geometryBLAS;                                          // point to geometry info(s)
+
+    // create a buffer to hold the Acceleration Structure that will be created
     const uint32_t numTriangles = indices.size()/3;
     VkAccelerationStructureBuildSizesInfoKHR buildSizesInfoBLAS = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
     vkGetAccelerationStructureBuildSizesKHR(device,
@@ -593,23 +479,24 @@ void BasicVulkan::createBottomLevelAccelerationStructure(){
                                             &buildSizesInfoBLAS);
     VulkanHelpers::createBuffer(device, physicalDevice, buildSizesInfoBLAS.accelerationStructureSize, blas);
 
+    // create an Acceleration Structure object
     VkAccelerationStructureCreateInfoKHR createInfoBLAS = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
     createInfoBLAS.buffer = blas.buffer;
     createInfoBLAS.size = buildSizesInfoBLAS.accelerationStructureSize;
     createInfoBLAS.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
     CHECK_ERROR(vkCreateAccelerationStructureKHR(device, &createInfoBLAS, nullptr, &blas.handle));
+    buildGeometryInfoBLAS.dstAccelerationStructure = blas.handle;
 
+    //create a scratch buffer that is required for Acceleration Structure creation
     Buffer scratchBuffer{};
     VulkanHelpers::createBuffer(device, physicalDevice,
                                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                                 buildSizesInfoBLAS.buildScratchSize,
                                 scratchBuffer);
-
-    buildGeometryInfoBLAS.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
-    buildGeometryInfoBLAS.dstAccelerationStructure = blas.handle;
     buildGeometryInfoBLAS.scratchData.deviceAddress = scratchBuffer.deviceAddress;
 
+    // define the range of the Acceleration structure to build, here: all of it
     VkAccelerationStructureBuildRangeInfoKHR buildRangeInfoBLAS{};
     buildRangeInfoBLAS.primitiveCount = static_cast<uint32_t>(indices.size()/3);
     buildRangeInfoBLAS.primitiveOffset = 0;
@@ -617,6 +504,7 @@ void BasicVulkan::createBottomLevelAccelerationStructure(){
     buildRangeInfoBLAS.transformOffset = 0;
     std::vector<VkAccelerationStructureBuildRangeInfoKHR*> buildRangeInfosBLAS = { &buildRangeInfoBLAS };
 
+    // finally build the acceleration structure
     VulkanHelpers::beginCommandBuffer(commandBuffer);
     vkCmdBuildAccelerationStructuresKHR(commandBuffer,
                                         1,
@@ -624,6 +512,7 @@ void BasicVulkan::createBottomLevelAccelerationStructure(){
                                         buildRangeInfosBLAS.data());
     VulkanHelpers::submitCommandBufferBlocking(device, commandBuffer, queue);
 
+    // get device address of Acceleration Structure for later use
     VkAccelerationStructureDeviceAddressInfoKHR deviceAddressInfoBLAS = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR};
     deviceAddressInfoBLAS.accelerationStructure = blas.handle;
     blas.deviceAddress = vkGetAccelerationStructureDeviceAddressKHR(device, &deviceAddressInfoBLAS);
@@ -635,16 +524,18 @@ void BasicVulkan::createTopLevelAccelerationStructure(){
     VkTransformMatrixKHR transformMatrix = {
         1.0f, 0.0f, 0.0f, 0.0f,
         0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f };
-    
-    VkAccelerationStructureInstanceKHR instance{};
-    instance.transform = transformMatrix;
-    instance.instanceCustomIndex = 0;
-    instance.mask = 0xFF;
-    instance.instanceShaderBindingTableRecordOffset = 0;
-    instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
-    instance.accelerationStructureReference = blas.deviceAddress;
+        0.0f, 0.0f, 1.0f, 0.0f }; // identity transform matrix
 
+    // create one single instance of our geometry data (i.e. the BLAS)
+    VkAccelerationStructureInstanceKHR instance{};
+    instance.transform = transformMatrix;                   //no transform, pass identity matrix
+    instance.instanceCustomIndex = 0;                       //user-specified index that can be accessed from shaders, unused
+    instance.mask = 0xFF;                                   //bitmask for this instance that can be accessed from shaders, unused
+    instance.instanceShaderBindingTableRecordOffset = 0;    //offset to define a custom hit shader for this instance, unused
+    instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR; //no face culling
+    instance.accelerationStructureReference = blas.deviceAddress;   //location of the BLAS data
+
+    // create a buffer to hold our instance(s) references
     Buffer instancesBuffer;
     VulkanHelpers::createBuffer(device, physicalDevice,
                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
@@ -653,47 +544,51 @@ void BasicVulkan::createTopLevelAccelerationStructure(){
                                 instancesBuffer,
                                 &instance);
 
+    // define our geometry
     VkAccelerationStructureGeometryKHR geometryTLAS = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
     geometryTLAS.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
     geometryTLAS.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
-    geometryTLAS.geometry.instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
+    geometryTLAS.geometry.instances = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR};
     geometryTLAS.geometry.instances.arrayOfPointers = VK_FALSE;
     geometryTLAS.geometry.instances.data.deviceAddress = instancesBuffer.deviceAddress;
 
-    
+    // define the build options
     VkAccelerationStructureBuildGeometryInfoKHR buildGeometryInfoTLAS = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
-    buildGeometryInfoTLAS.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
-    buildGeometryInfoTLAS.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
-    buildGeometryInfoTLAS.geometryCount = 1;
-    buildGeometryInfoTLAS.pGeometries = &geometryTLAS;
+    buildGeometryInfoTLAS.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;      // build a Top Level Acceleration structure
+    buildGeometryInfoTLAS.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;    // build it, as opposed to updating
+    buildGeometryInfoTLAS.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;    // prefer fast trace over fast build
+    buildGeometryInfoTLAS.geometryCount = 1;                                        // 1 geometry (i.e. our 1 BLAS instance)
+    buildGeometryInfoTLAS.pGeometries = &geometryTLAS;                              // point to geometry info(s)
 
+    //create a buffer to hold the Acceleration Structure
     uint32_t numInstances = 1;
     VkAccelerationStructureBuildSizesInfoKHR buildSizesInfoTLAS = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
-    vkGetAccelerationStructureBuildSizesKHR(device, 
+    vkGetAccelerationStructureBuildSizesKHR(device,
                                             VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
                                             &buildGeometryInfoTLAS,
                                             &numInstances,
                                             &buildSizesInfoTLAS);
-    
+
     VulkanHelpers::createBuffer(device, physicalDevice, buildSizesInfoTLAS.accelerationStructureSize, tlas);
 
+    // create the Acceleration Structure object
     VkAccelerationStructureCreateInfoKHR createInfoTLAS = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
     createInfoTLAS.buffer = tlas.buffer;
     createInfoTLAS.size = buildSizesInfoTLAS.accelerationStructureSize;
     createInfoTLAS.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
     vkCreateAccelerationStructureKHR(device, &createInfoTLAS, nullptr, &tlas.handle);
-    
+    buildGeometryInfoTLAS.dstAccelerationStructure = tlas.handle;
+
+    // create the required scratch buffer
     Buffer scratchBuffer{};
     VulkanHelpers::createBuffer(device, physicalDevice,
                                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                                 buildSizesInfoTLAS.buildScratchSize,
                                 scratchBuffer);
-
-    buildGeometryInfoTLAS.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
-    buildGeometryInfoTLAS.dstAccelerationStructure = tlas.handle;
     buildGeometryInfoTLAS.scratchData.deviceAddress = scratchBuffer.deviceAddress;
 
+    // define range of Acceleration structure to build, here: all of it
     VkAccelerationStructureBuildRangeInfoKHR buildRangeInfoTLAS{};
     buildRangeInfoTLAS.primitiveCount = 1;
     buildRangeInfoTLAS.primitiveOffset = 0;
@@ -701,6 +596,7 @@ void BasicVulkan::createTopLevelAccelerationStructure(){
     buildRangeInfoTLAS.transformOffset = 0;
     std::vector<VkAccelerationStructureBuildRangeInfoKHR*> buildRangeInfosTLAS = { &buildRangeInfoTLAS };
 
+    // finally build the Acceleration Structure
     VulkanHelpers::beginCommandBuffer(commandBuffer);
     vkCmdBuildAccelerationStructuresKHR(commandBuffer,
                                         1,
@@ -708,6 +604,7 @@ void BasicVulkan::createTopLevelAccelerationStructure(){
                                         buildRangeInfosTLAS.data());
     VulkanHelpers::submitCommandBufferBlocking(device, commandBuffer, queue);
 
+    // get device address of Acceleration Structure for later use
     VkAccelerationStructureDeviceAddressInfoKHR deviceAddressInfoTLAS = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR};
     deviceAddressInfoTLAS.accelerationStructure = tlas.handle;
     tlas.deviceAddress = vkGetAccelerationStructureDeviceAddressKHR(device, &deviceAddressInfoTLAS);
@@ -718,41 +615,42 @@ void BasicVulkan::createTopLevelAccelerationStructure(){
 
 void BasicVulkan::createPipeline(){
 
-    // create Descriptor Set Layout
-    // this describes the type and number of objects that we want to bind to which stage of the Pipeline later.
-    // defining which objects we want to bind happens further down after the Descriptor Set object is successfully created.
+    // define Descriptor Set Layout
+    // this describes the type and number of objects that we want to bind to each stage of the Pipeline later.
+    // defining which actual objects we want to bind happens further down after the Descriptor Set object is successfully created from this layout.
     std::vector<VkDescriptorSetLayoutBinding> bindings;
 
-    bindings.push_back(VkDescriptorSetLayoutBinding{});
+    bindings.push_back(VkDescriptorSetLayoutBinding{});     // TLAS
     bindings.back().binding = BINDING_TLAS;
     bindings.back().descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     bindings.back().descriptorCount = 1;
     bindings.back().stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
-    
-    bindings.push_back(VkDescriptorSetLayoutBinding{});
-    bindings.back().binding = BINDING_IMAGE;
-    bindings.back().descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    bindings.back().descriptorCount = 1;
-    bindings.back().stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
 
-    bindings.push_back(VkDescriptorSetLayoutBinding{});
+    bindings.push_back(VkDescriptorSetLayoutBinding{});     // Rays
     bindings.back().binding = BINDING_RAYS;
     bindings.back().descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings.back().descriptorCount = 1;
     bindings.back().stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
 
-    bindings.push_back(VkDescriptorSetLayoutBinding{});
+    bindings.push_back(VkDescriptorSetLayoutBinding{});     // Vertices
     bindings.back().binding = BINDING_VERTICES;
     bindings.back().descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings.back().descriptorCount = 1;
     bindings.back().stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 
-    bindings.push_back(VkDescriptorSetLayoutBinding{});
+    bindings.push_back(VkDescriptorSetLayoutBinding{});     // Indices
     bindings.back().binding = BINDING_INDICES;
     bindings.back().descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings.back().descriptorCount = 1;
     bindings.back().stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 
+    bindings.push_back(VkDescriptorSetLayoutBinding{}); // Results
+    bindings.back().binding = BINDING_RESULTS;
+    bindings.back().descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings.back().descriptorCount = 1;
+    bindings.back().stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+
+    // create Descriptor Set Layout
     VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     descriptorSetLayoutCreateInfo.bindingCount = static_cast<uint32_t>(bindings.size());
     descriptorSetLayoutCreateInfo.pBindings = bindings.data();
@@ -760,13 +658,12 @@ void BasicVulkan::createPipeline(){
 
     // Declare that we want to use Push Constants in our Pipeline
     // "Push constants let us send a small amount of data (it has a limited size) to the shader, in a very simple and performant way."
-    // TODO still needed? remove?
     VkPushConstantRange pushConstantRange{};
     pushConstantRange.size = sizeof(PushConstants);
     pushConstantRange.offset = 0;
     pushConstantRange.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
 
-    //create Pipeline Layout with our Descriptor Set Layout and Push Constants
+    //create a Pipeline Layout containing our Descriptor Set Layout and Push Constants
     VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     pipelineLayoutCreateInfo.setLayoutCount = 1;
     pipelineLayoutCreateInfo.pSetLayouts = &descriptorSetLayout;
@@ -819,7 +716,7 @@ void BasicVulkan::createPipeline(){
     shaderGroups[2].anyHitShader = VK_SHADER_UNUSED_KHR;
     shaderGroups[2].intersectionShader = VK_SHADER_UNUSED_KHR;
 
-    //Create Pipeline with all the infos we created above 
+    //Create Pipeline with all the infos we created above
     VkRayTracingPipelineCreateInfoKHR pipelineCreateInfo = {VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR};
     pipelineCreateInfo.stageCount = static_cast<uint32_t>(shaderStages.size());
     pipelineCreateInfo.pStages = shaderStages.data();
@@ -839,7 +736,7 @@ void BasicVulkan::createPipeline(){
     const VkDeviceSize sbtHandleAlignment = rayTracingPipelineProperties.shaderGroupHandleAlignment;
     sbtStride = sbtBaseAlignment * ((sbtHeaderSize + sbtBaseAlignment - 1) / sbtBaseAlignment);
     const uint32_t sbtSize = static_cast<uint32_t>(sbtStride * shaderGroups.size());
-    
+
     std::vector<uint8_t> shaderHandles(sbtHeaderSize * shaderGroups.size());
     CHECK_ERROR(vkGetRayTracingShaderGroupHandlesKHR(device,
                                             pipeline,
@@ -863,12 +760,11 @@ void BasicVulkan::createPipeline(){
     // Create Descriptor Sets
     // this now actually defines which objects we want to bind to the pipeline.
     // we defined a Descriptor Set Layout earlier that specifies number and type of these objects
-    
+
     //first create a pool to allocate the descriptor sets from
     std::vector<VkDescriptorPoolSize> descriptorPoolSizes = {
-        { VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1},
-        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
-        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}
+        { VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1}, //tlas
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4} //vertexBuffer, indiceBuffer, rayBuffer, resultsBuffer
     };
 
     VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -894,17 +790,6 @@ void BasicVulkan::createPipeline(){
     writeDescriptorSets.back().dstBinding = BINDING_TLAS;
     writeDescriptorSets.back().descriptorCount = 1;
     writeDescriptorSets.back().descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-
-    //create Descriptor Set for each binding: storageImage
-    writeDescriptorSets.push_back(VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET});
-    VkDescriptorImageInfo  storageImageDescriptor;
-    storageImageDescriptor.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-    storageImageDescriptor.imageView = storageImage.view;
-    writeDescriptorSets.back().pImageInfo = &storageImageDescriptor;
-    writeDescriptorSets.back().dstSet = descriptorSet;
-    writeDescriptorSets.back().dstBinding = BINDING_IMAGE;
-    writeDescriptorSets.back().descriptorCount = 1;
-    writeDescriptorSets.back().descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 
     //create Descriptor Set for each binding: vertexBuffer
     writeDescriptorSets.push_back(VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET});
@@ -939,59 +824,29 @@ void BasicVulkan::createPipeline(){
     writeDescriptorSets.back().descriptorCount = 1;
     writeDescriptorSets.back().descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 
+    //create Descriptor Set for each binding: resultsBuffer
+    writeDescriptorSets.push_back(VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET});
+    VkDescriptorBufferInfo  resultsBufferDescriptor = {};
+    resultsBufferDescriptor.buffer = resultsBuffer.buffer;
+    resultsBufferDescriptor.range = VK_WHOLE_SIZE;
+    writeDescriptorSets.back().pBufferInfo = &resultsBufferDescriptor;
+    writeDescriptorSets.back().dstSet = descriptorSet;
+    writeDescriptorSets.back().dstBinding = BINDING_RESULTS;
+    writeDescriptorSets.back().descriptorCount = 1;
+    writeDescriptorSets.back().descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(writeDescriptorSets.size()), writeDescriptorSets.data(), 0, VK_NULL_HANDLE);
-}   
+}
 
 void BasicVulkan::transferToCPU(){
-    VulkanHelpers::beginCommandBuffer(commandBuffer);
-    VkImageMemoryBarrier imageMemoryBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    imageMemoryBarrier.image = storageImage.image;
-    imageMemoryBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-    imageMemoryBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    imageMemoryBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-    imageMemoryBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    imageMemoryBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    imageMemoryBarrier.subresourceRange.baseArrayLayer = 0;
-    imageMemoryBarrier.subresourceRange.baseMipLevel = 0;
-    imageMemoryBarrier.subresourceRange.layerCount = 1;
-    imageMemoryBarrier.subresourceRange.levelCount = 1;
-    vkCmdPipelineBarrier(commandBuffer,
-                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                         0, 0, nullptr, 0, nullptr,
-                         1, &imageMemoryBarrier);
-    
+    //transfer results data from results buffer to results staging buffer
+    VulkanHelpers::copyBuffer(device, queue, commandBuffer, resultsBuffer, resultsBufferStaging);
 
-    //Copy image to imageLinear
-    VkImageCopy copyRegion;
-    copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    copyRegion.srcSubresource.baseArrayLayer = 0;
-    copyRegion.srcSubresource.layerCount = 1;
-    copyRegion.srcSubresource.mipLevel = 0;
-    copyRegion.srcOffset = {0,0,0};
-    copyRegion.dstSubresource = copyRegion.srcSubresource;
-    copyRegion.dstOffset = {0,0,0};
-    copyRegion.extent = {image_width, image_height, 1};
-    vkCmdCopyImage(commandBuffer,
-                   storageImage.image,
-                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                   transferImage.image,
-                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                   1, &copyRegion);
-    VkMemoryBarrier memoryBarrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-    memoryBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    memoryBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-    vkCmdPipelineBarrier(commandBuffer,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_HOST_BIT,
-                         0,
-                         1, &memoryBarrier,
-                         0, nullptr, 0, nullptr);
-    VulkanHelpers::submitCommandBufferBlocking(device, commandBuffer, queue);
-    
+    //map staging buffer to host memory and write out data
     void* data;
-    vkMapMemory(device, transferImage.memory, 0, VK_WHOLE_SIZE, 0, &data);
+    vkMapMemory(device, resultsBufferStaging.memory, 0, VK_WHOLE_SIZE, 0, &data);
     writeImage(OutFilename, &data);
+    vkUnmapMemory(device, resultsBufferStaging.memory);
 }
 
 void BasicVulkan::loadModelFromFile(std::string modelPath){
@@ -1057,7 +912,7 @@ void BasicVulkan::loadModelFromFile(std::string modelPath){
         for(auto index : shape.mesh.indices){
             indices.push_back(index.vertex_index);
         }
-    }    
+    }
 }
 
 void BasicVulkan::writeImage(const std::string& filename, void** data){

@@ -33,7 +33,7 @@ VkDeviceAddress VulkanHelpers::getBufferDeviceAddress(VkDevice device, VkBuffer*
 
 void VulkanHelpers::createBuffer(VkDevice device, VkPhysicalDevice physicalDevice, VkBufferUsageFlags bufferUsageFlags, VkMemoryPropertyFlags memoryPropertyFlags, VkDeviceSize size, Buffer& buffer, void* data){
     bufferUsageFlags |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;  // required for vkGetBufferDeviceAddress
-    
+
     VulkanHelpers::createBuffer(device, physicalDevice, bufferUsageFlags, memoryPropertyFlags, size, buffer.buffer, buffer.memory, data);
     buffer.size = size; // remember the size, e.g. for copying into the buffer later
 
@@ -71,7 +71,7 @@ void VulkanHelpers::createBuffer(VkDevice device, VkPhysicalDevice physicalDevic
         void *mapped;
         CHECK_ERROR(vkMapMemory(device, memory, 0, size, 0, &mapped));
         memcpy(mapped, data, size);
-        
+
         if ((memoryPropertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0)
         {
             // if memory is host-coherent, flush before unmapping to make sure all CPU writes to 
@@ -102,6 +102,16 @@ void VulkanHelpers::destroyBuffer(VkDevice device, Buffer* buffer){
     buffer->size = 0;
 }
 
+void VulkanHelpers::copyBuffer(VkDevice device, VkQueue queue, VkCommandBuffer commandBuffer, Buffer sourceBuffer, Buffer destinationBuffer){
+    VkBufferCopy region{};
+    region.srcOffset = 0;
+    region.dstOffset = 0;
+    region.size = destinationBuffer.size;
+    VulkanHelpers::beginCommandBuffer(commandBuffer);
+    vkCmdCopyBuffer(commandBuffer, sourceBuffer.buffer, destinationBuffer.buffer, 1, &region);
+    VulkanHelpers::submitCommandBufferBlocking(device, commandBuffer, queue);
+}
+
 void VulkanHelpers::beginCommandBuffer(VkCommandBuffer commandBuffer){
     VkCommandBufferBeginInfo commandBufferBeginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     commandBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -113,25 +123,25 @@ void VulkanHelpers::submitCommandBufferBlocking(VkDevice device, VkCommandBuffer
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
     CHECK_ERROR(vkQueueSubmit(queue, 1, &submitInfo, nullptr));
-    
+
     // wait for all submitted commands to finish
     // "vkQueueWaitIdle is equivalent to having submitted a valid fence to every previously executed queue submission command that accepts a fence, then waiting for all of those fences to signal[...]"" 
     CHECK_ERROR(vkQueueWaitIdle(queue));
 }
 
 void VulkanHelpers::createBuffer(VkDevice device, VkPhysicalDevice physicalDevice, VkDeviceSize size, AccelerationStructure& accelerationStructure){
-    
-    VulkanHelpers::createBuffer(device, physicalDevice, 
+
+    VulkanHelpers::createBuffer(device, physicalDevice,
                                 VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                                 size,
                                 accelerationStructure.buffer,
                                 accelerationStructure.memory);
-    
+
     // get device address of device memory
-    accelerationStructure.deviceAddress = getBufferDeviceAddress(device, &accelerationStructure.buffer);    
+    accelerationStructure.deviceAddress = getBufferDeviceAddress(device, &accelerationStructure.buffer);
 }
-void VulkanHelpers::destroyAccelerationStructureBuffer(VkDevice device, AccelerationStructure* as){
+void VulkanHelpers::destroyBuffer(VkDevice device, AccelerationStructure* as){
     if(as->memory != VK_NULL_HANDLE){
         vkFreeMemory(device, as->memory, nullptr);
     }
@@ -145,21 +155,6 @@ void VulkanHelpers::destroyAccelerationStructureBuffer(VkDevice device, Accelera
     as->buffer = VK_NULL_HANDLE;
     as->memory = VK_NULL_HANDLE;
     as->handle = VK_NULL_HANDLE;
-}
-
-void VulkanHelpers::destroyImage(VkDevice device, Image* image){
-    if(image->image != VK_NULL_HANDLE){
-        vkDestroyImage(device, image->image, nullptr);
-    }
-    if(image->view != VK_NULL_HANDLE){
-        vkDestroyImageView(device, image->view, nullptr);
-    }
-    if(image->memory != VK_NULL_HANDLE){
-        vkFreeMemory(device, image->memory, nullptr);
-    }
-    image->memory = VK_NULL_HANDLE;
-    image->view = VK_NULL_HANDLE;
-    image->image = VK_NULL_HANDLE;
 }
 
 VkShaderModule VulkanHelpers::loadShaderFromFile(VkDevice device, std::string filepath){
@@ -178,7 +173,7 @@ VkShaderModule VulkanHelpers::loadShaderFromFile(VkDevice device, std::string fi
     shaderModuleCrateInfo.pCode = reinterpret_cast<const uint32_t*>(shaderFile.data());
     VkShaderModule shaderModule;
     CHECK_ERROR(vkCreateShaderModule(device, &shaderModuleCrateInfo, VK_NULL_HANDLE, &shaderModule));
-        
+
     return shaderModule;
 }
 
@@ -231,6 +226,6 @@ void VulkanHelpers::handleError(VkResult result, const char* file, int32_t line,
     std::cerr << "Vulkan Error: in " << func << std::endl;
     std::cerr << "Vulkan Error: from " << failedCall << std::endl;
     std::cerr << "Vulkan Error: " << VulkanHelpers::getResultString(result) << std::endl;
-    
+
     throw std::runtime_error("Critical Error");
 }

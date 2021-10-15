@@ -12,7 +12,7 @@
 #extension GL_EXT_debug_printf : require
 #endif //DEBUG
 
-layout(binding = BINDING_IMAGE, set = 0, rgba32f) uniform image2D storageImage;
+//layout(binding = BINDING_IMAGE, set = 0, rgba32f) uniform image2D storageImage;
 layout(binding = BINDING_TLAS, set = 0) uniform accelerationStructureEXT tlas;
 layout(binding = BINDING_RAYS, set = 0, scalar) buffer Rays
 {
@@ -26,18 +26,21 @@ layout(binding = BINDING_INDICES, set = 0, scalar) buffer Indices
 {
   uint indices[];
 };
-
-layout(location = 0) rayPayloadEXT RayPayload pld;
+layout(binding = BINDING_RESULTS, set = 0, scalar) buffer Results{
+  RaytraceResult results[];
+};
 
 layout(push_constant) uniform PushConsts
 {
   PushConstants pushConstants;
 };
 
+layout(location = 0) rayPayloadEXT RayPayload pld;  //ray payload that gets sent with the ray to hit/miss shaders
+
 void main()
 {
   //get image resolution and which pixel this shader works on
-  const ivec2 resolution = imageSize(storageImage);
+  const ivec2 resolution = ivec2(pushConstants.resolutionX, pushConstants.resolutionY);
   const ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
  
   //get ray data
@@ -68,5 +71,7 @@ void main()
     color = vec4(tmp, 0.0f, 0.0f, 0.0f);
   }
   
-  imageStore(storageImage, pixel, color);
+  RaytraceResult res;
+  res.color = vec4_(color.r,color.g,color.b,color.a);
+  results[idx] = res;
 }
