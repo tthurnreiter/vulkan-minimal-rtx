@@ -1,3 +1,8 @@
+## parts of this file are lifted from https://github.com/nvpro-samples/vk_mini_path_tracer/blob/main/vk_mini_path_tracer/CMakeLists.txt
+## which has the following copyright notices:
+## # Copyright 2020 NVIDIA Corporation
+## # SPDX-License-Identifier: Apache-2.0
+
 cmake_minimum_required(VERSION 3.1)
 set(CMAKE_VERBOSE_MAKEFILE ON)
 
@@ -73,6 +78,3 @@ add_executable(${PROJECT_NAME} ${HEADERS} ${SOURCES} ${GLSL_SOURCES})
 
 #target_link_libraries(${PROJECT_NAME} vulkan)
 target_link_libraries(${PROJECT_NAME} dl) #volk needs libdl
-
-#install(FILES ${SPV_OUTPUT} CONFIGURATIONS Release DESTINATION "bin_${ARCH}/${PROJNAME}/shaders")
-#install(FILES ${SPV_OUTPUT} CONFIGURATIONS Debug DESTINATION "bin_${ARCH}_debug/${PROJNAME}/shaders")

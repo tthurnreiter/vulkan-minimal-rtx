@@ -101,7 +101,9 @@ int main(int argc, char** argv){
 }
 
 BasicVulkan::BasicVulkan(){
-    ModelPath = BasicVulkan::findFile("render-data/sponza.fixed.obj", searchPaths);
+    ModelPath = BasicVulkan::findFile("render-data/sibenik/sibenik.obj", searchPaths);
+    // ModelPath = BasicVulkan::findFile("render-data/sponza/sponza.fixed.obj", searchPaths);
+    // ModelPath = BasicVulkan::findFile("render-data/San_Miguel_casual-effects/san-miguel-scale50.obj", searchPaths);
 
     createVulkanInstance();
     initDevice();
@@ -137,9 +139,23 @@ BasicVulkan::~BasicVulkan(){
 
 void BasicVulkan::generateCamRays(){
     std::vector<Ray> rays;
-    glm::vec3 camPos = glm::vec3(-516,300,0);
+
+    glm::vec3 camPos = glm::vec3(-13,-12,0); //render-data/sibenik/sibenik.obj
+    glm::vec3 camDir = glm::vec3(1,0,0);
     glm::vec3 camUp = glm::vec3(0,1,0);
-    glm::vec3 camDir = glm::vec3(1,0.2,0);
+
+    // glm::vec3 camPos = glm::vec3(-516,300,0); //render-data/sponza/sponza.fixed.obj
+    // glm::vec3 camDir = glm::vec3(1,0,0);
+    // glm::vec3 camUp = glm::vec3(0,1,0);
+
+    // glm::vec3 camPos = glm::vec3(600,130,200); //render-data/San_Miguel_casual-effects/san-miguel-scale-50.obj 1
+    // glm::vec3 camDir = glm::vec3(1,-0.2,-0.5);
+    // glm::vec3 camUp = glm::vec3(0,1,0);
+
+    // glm::vec3 camPos = glm::vec3(900,100,500); //render-data/San_Miguel_casual-effects/san-miguel-scale-50.obj 2
+    // glm::vec3 camDir = glm::vec3(-0.58,0.01,-0.81);
+    // glm::vec3 camUp = glm::vec3(0,1,0);
+
     float fovy = 65;
 
     float aspect = float(image_width)/image_height;
@@ -151,10 +167,11 @@ void BasicVulkan::generateCamRays(){
 
     // create cam ray for each pixel
     // the order is important because we need to access the rays from the shader in the same order
-    for(int pixelY = 0; pixelY < image_width; pixelY++){
-        for(int pixelX = 0; pixelX < image_height; pixelX++){
-            float u = (float(pixelX)+0.5f)/float(image_width) * 2.0f - 1.0f;
-        	float v = (float(pixelY)+0.5f)/float(image_height) * 2.0f - 1.0f;
+    // the shader assumes a coordinate system with (0,0) at top left
+    for(int pixelY = image_height-1; pixelY >= 0; pixelY--){
+        for(int pixelX = 0; pixelX <image_width; pixelX++){
+            float u = (-1.0f + 2.0f*(float(pixelX)+0.5f)/float(image_width))*near_w;
+        	float v = (-1.0f + 2.0f*(float(pixelY)+0.5f)/float(image_height))*near_h;
             glm::vec3 O = camPos;
             glm::vec3 D = glm::normalize(camDir + U*u + V*v);
             rays.push_back(Ray{ O.x, O.y, O.z, D.x, D.y, D.z });

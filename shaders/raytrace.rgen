@@ -64,11 +64,12 @@ void main()
   
   vec4 color;
   if(pld.rayHitSky == true){
-    color = vec4(0.0f, 0.0f, 0.5f, 0.0f);
+    color = vec4(0.0f, 0.0f, 0.0f, 0.0f);
   }
   else{
-    float tmp = clamp(pld.hitT/10000, 0, 1);
-    color = vec4(tmp, 0.0f, 0.0f, 0.0f);
+    // float tmp = clamp((pld.hitT/2500), 0, 1);
+    float tmp = 1-(pld.hitT/35);
+    color = vec4(tmp, tmp, tmp, 0.0f);
   }
   
   RaytraceResult res;
