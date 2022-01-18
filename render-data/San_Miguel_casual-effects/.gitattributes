@@ -1,0 +1,2 @@
+san-miguel-scale50.obj filter=lfs diff=lfs merge=lfs -text
+san-miguel.obj filter=lfs diff=lfs merge=lfs -text
