@@ -862,7 +862,26 @@ void BasicVulkan::transferToCPU(){
     //map staging buffer to host memory and write out data
     void* data;
     vkMapMemory(device, resultsBufferStaging.memory, 0, VK_WHOLE_SIZE, 0, &data);
-    writeImage(OutFilename, &data);
+
+    //create an image from the raytracing data (only a simple depth map)
+    RaytraceResult* result = (RaytraceResult*) data;
+    std::vector<vec4_> image(image_width*image_height);
+    for(int x = 0; x < image_width; x++){
+        for(int y = 0; y < image_height; y++){
+            int pxl = x+image_width*y;
+            if(result[pxl].rayHitSky == true){
+                image[pxl] = {0.0f, 0.0f, 0.0f, 0.0f};
+            }
+            else{
+                // float tmp = clamp((pld.hitT/2500), 0, 1);
+                float tmp = 1-(result[pxl].hitT/35);
+                image[pxl] = {tmp, tmp, tmp, 0.0f};
+            }
+        }
+    }
+    void *imagedata = (void *) image.data();
+    writeImage(OutFilename, &imagedata);
+
     vkUnmapMemory(device, resultsBufferStaging.memory);
 }
 

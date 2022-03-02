@@ -27,7 +27,11 @@ struct Ray {
 };
 
 struct RaytraceResult {
-    vec4_ color;
+    float hitT;
+    bool rayHitSky;
+    uint hitID;
+    float hitBeta;
+    float hitGamma;
 };
 
 #define BINDING_IMAGE 0

@@ -61,18 +61,12 @@ void main()
               rayDir,               // ray direction
               tmax,                 // maximum T-value
               0);                   //location of ray payload
-  
-  vec4 color;
-  if(pld.rayHitSky == true){
-    color = vec4(0.0f, 0.0f, 0.0f, 0.0f);
-  }
-  else{
-    // float tmp = clamp((pld.hitT/2500), 0, 1);
-    float tmp = 1-(pld.hitT/35);
-    color = vec4(tmp, tmp, tmp, 0.0f);
-  }
-  
+
   RaytraceResult res;
-  res.color = vec4_(color.r,color.g,color.b,color.a);
+  res.hitT = pld.hitT;
+  res.rayHitSky = pld.rayHitSky;
+  res.hitID = pld.hitID;
+  res.hitBeta = pld.hitBeta;
+  res.hitGamma = pld.hitGamma;
   results[idx] = res;
 }
