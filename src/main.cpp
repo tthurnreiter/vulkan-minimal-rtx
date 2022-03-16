@@ -826,7 +826,7 @@ void BasicVulkan::createPipeline(){
     indexBufferDescriptor.range = VK_WHOLE_SIZE;
     writeDescriptorSets.back().pBufferInfo = &indexBufferDescriptor;
     writeDescriptorSets.back().dstSet = descriptorSet;
-    writeDescriptorSets.back().dstBinding = BINDING_VERTICES;
+    writeDescriptorSets.back().dstBinding = BINDING_INDICES;
     writeDescriptorSets.back().descriptorCount = 1;
     writeDescriptorSets.back().descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 

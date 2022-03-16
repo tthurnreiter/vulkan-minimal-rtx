@@ -19,12 +19,6 @@ struct AccelerationStructure {
     VkBuffer buffer = VK_NULL_HANDLE;
 };
 
-struct Image{
-    VkImage image = VK_NULL_HANDLE;
-    VkImageView view = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-};
-
 class VulkanHelpers{
     public:
       static void createBuffer(VkDevice device, VkPhysicalDevice physicalDevice, VkDeviceSize size, AccelerationStructure& accelerationStructure);
