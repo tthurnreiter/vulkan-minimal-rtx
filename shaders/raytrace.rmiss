@@ -5,9 +5,7 @@
 #include "../src/common.h"
 #include "shaderCommon.h"
 
-#ifdef DEBUG
 #extension GL_EXT_debug_printf : require
-#endif //DEBUG
 
 layout(location = 0) rayPayloadInEXT RayPayload pld;
 
